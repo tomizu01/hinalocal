@@ -45,11 +45,10 @@ database:
   path: "C:/hinalive/backend/data.db"
 
 # プロンプトファイル
+# キャラ別プロンプト（character.md / cheer.md）は
+# backend/characters/<character.current_id>/prompts/ 配下から自動で解決される。
+# cheer.md の代わりに使うファイルは起動オプション --cheer で上書き可能。
 prompts:
-  # キャラ設定（常時ロード）
-  character_path: "C:/hinalive/backend/prompts/character.md"
-  # active なゲーム別 実況応援プロンプト。タイトル切り替え時はここを書き換える
-  task_path: "C:/hinalive/backend/prompts/minecraft.md"
   # 中期記憶生成用テンプレート。{target_chars} {history_text} {game_name} を埋め込む
   summary_path: "C:/hinalive/backend/prompts/summary.md"
 
@@ -61,7 +60,13 @@ game:
 # キャラクター
 character:
   # 現在のキャラクターID（A-Za-z、1-16文字）
-  # 会話履歴・各種記憶はこのIDに紐づく
+  # 会話履歴・各種記憶はこのIDに紐づく。
+  # 起動オプション --char_id で上書き可能。
+  # キャラ関連ファイルは下記から自動解決される：
+  #   backend/characters/<id>/setting.yaml
+  #   backend/characters/<id>/prompts/character.md
+  #   backend/characters/<id>/prompts/cheer.md
+  #   frontend/images/<id>/stand.png, talk.png
   current_id: "hina"
 
 # 記憶レイヤー

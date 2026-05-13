@@ -52,10 +52,15 @@ hinalive/
 │   ├── main.py
 │   ├── config.yaml          # クリップ座標、Gemini APIキー、モデル名、active プロンプト指定 等
 │   ├── prompts/
-│   │   ├── character.md     # キャラ設定プロンプト（常時ロード）
-│   │   ├── zwift.md         # ゲーム別の実況・応援指示（差し替え対象）
-│   │   ├── minecraft.md     # 〃
-│   │   └── ...              # 必要に応じてタイトル別ファイルを追加
+│   │   └── summary.md       # 中期記憶要約テンプレ（キャラ非依存）
+│   ├── characters/
+│   │   └── <char_id>/       # キャラごとに 1 ディレクトリ（例: hina）
+│   │       ├── setting.yaml # キャラ名 (name) / ElevenLabsボイスID (voice_id)
+│   │       └── prompts/
+│   │           ├── character.md  # キャラ設定プロンプト（常時ロード）
+│   │           ├── cheer.md      # 実況応援プロンプト（既定）
+│   │           ├── zwift.md      # ゲーム別の実況応援プロンプト（--cheer で切替）
+│   │           └── ...
 │   ├── requirements.txt
 │   └── data.db              # SQLite
 ├── frontend/
@@ -64,12 +69,26 @@ hinalive/
 │   ├── config.js            # ElevenLabs APIキー等（フロント設定）
 │   ├── style.css
 │   └── images/
-│       ├── stand.png        # キャラ立ち絵（APNG）
-│       └── talk.png         # キャラ会話絵（APNG）
+│       └── <char_id>/       # キャラごとに 1 ディレクトリ
+│           ├── stand.png    # キャラ立ち絵（APNG）
+│           └── talk.png     # キャラ会話絵（APNG）
 ├── captures/
 │   └── processing/          # キャプチャ画像（加工後JPG）の保存フォルダ
 └── setup.ps1                # 初期設定スクリプト（PowerShell用、venv作成 + pip install）
 ```
+
+## キャラクター追加方法
+
+新キャラクターを追加するには、キャラクターID（A-Za-z 1-16文字）を `<char_id>` として下記ファイルを配置するだけでよい：
+
+- `backend/characters/<char_id>/setting.yaml` … `name` / `voice_id`
+- `backend/characters/<char_id>/prompts/character.md` … キャラ設定プロンプト
+- `backend/characters/<char_id>/prompts/cheer.md` … 既定の実況応援プロンプト
+- `frontend/images/<char_id>/stand.png` … 立ち絵
+- `frontend/images/<char_id>/talk.png` … 会話絵
+
+`config.yaml` の `character.current_id`、または起動オプション `--char_id` で切り替える。
+`char_id` と `voice_id` はバックエンド `/api/character` 経由でフロントへ渡される。
 
 # 設定ファイル仕様
 
@@ -84,11 +103,14 @@ hinalive/
 - メインループ間隔（既定 10秒）
 - DBファイルパス
 - プロンプトファイルパス
-  - `prompts.character_path` … キャラ設定（常時ロード）
-  - `prompts.task_path` … active な実況応援プロンプト（タイトル切り替え時はここを書き換える）
   - `prompts.summary_path` … 中期記憶要約用テンプレート（`{target_chars}` `{history_text}` `{game_name}` を埋め込み）
+  - キャラ設定（`character.md`）と実況応援（`cheer.md`）のパスは
+    `backend/characters/<character.current_id>/prompts/` から自動で解決される。
+    cheer の別ファイル指定は起動オプション `--cheer` を使う
 - キャラクター設定
   - `character.current_id` … 現在のキャラクターID。会話履歴・各種記憶テーブルに紐づくキー。**A-Za-z 1〜16文字** の制約（起動時に検証、違反したら起動失敗）
+  - 起動オプション `--char_id` で上書き可能
+  - `backend/characters/<character.current_id>/setting.yaml` から `name` / `voice_id` を読み込む（起動時必須）
 - ゲーム設定
   - `game.name` … 現在プレイ中のゲームの表示名。要約プロンプト等に埋め込まれる
 - 記憶レイヤー設定
@@ -98,8 +120,10 @@ hinalive/
   - `memory.mid_term.interval_seconds` … バッチループの待機間隔秒数（既定 10）
 
 ### 起動時オプション
+- `--char_id <ID>` … `character.current_id` を実行時に上書き（A-Za-z 1-16文字）
 - `--window <タイトル部分一致>` … `capture.window_title` を実行時に上書き
-- `--cheer <ファイル名>` … 実況応援プロンプトファイルを `prompts/` 配下から指定して上書き（拡張子省略可）
+- `--cheer <ファイル名>` … 実況応援プロンプトファイルを
+  `backend/characters/<char_id>/prompts/` 配下から指定して上書き（拡張子省略可）
 - `--day <整数>` … プレイ日 (Day) を整数で指定（`1` のような連番でも `20260513` のような日付運用でも可）。
   - 未指定時は、現キャラの `messages` で最新 `created_at` の行の `day` を取得して **継続**
   - 履歴が1件もなければ `1` で新規開始
@@ -113,11 +137,11 @@ hinalive/
 
 ## プロンプトファイル
 
-- `backend/prompts/character.md` … キャラ設定（口調・性格・世界観など）。**常にロード**される。
-- `backend/prompts/<game>.md` … タイトル別の実況・応援指示。「画面から何を読み取るか」「どんな声かけをするか」「禁止事項」などを記述する。
-  - 例：`zwift.md`, `minecraft.md`, など必要に応じて追加
-  - active なものを `config.yaml` で1つ指定する
-- `backend/prompts/summary.md` … 中期記憶要約バッチで使うテンプレート。Python の `str.format()` で以下の名前付きプレースホルダを埋め込んで使う：
+- `backend/characters/<char_id>/prompts/character.md` … キャラ設定（口調・性格・世界観など）。**常にロード**される。
+- `backend/characters/<char_id>/prompts/cheer.md` … 既定の実況応援プロンプト。
+- `backend/characters/<char_id>/prompts/<game>.md` … タイトル別の実況応援プロンプト。「画面から何を読み取るか」「どんな声かけをするか」「禁止事項」などを記述する。
+  - 例：`zwift.md`, `minecraft.md` などを必要に応じて追加し、`--cheer <name>` で切り替える
+- `backend/prompts/summary.md` … 中期記憶要約バッチで使うテンプレート（キャラ非依存）。Python の `str.format()` で以下の名前付きプレースホルダを埋め込んで使う：
   - `{game_name}` … `config.yaml` の `game.name`
   - `{target_chars}` … `config.yaml` の `memory.mid_term.target_chars`
   - `{history_text}` … 直近会話履歴（`AI: ～` / `プレイヤー: ～` 形式）
@@ -185,6 +209,11 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 ※ 中期記憶の **会話生成プロンプトへの注入は本フェーズの対象外**（保存のみ実装）
 
 ## API一覧
+
+### GET /api/character  （キャラクター情報取得API）
+- 現在のキャラクターの `id` / `name` / `voice_id` を返す。
+- レスポンス: `{"id": "<char_id>", "name": "<表示名>", "voice_id": "<ElevenLabsボイスID>"}`
+- フロントエンドは起動時にこれを取得し、キャラ画像のパス（`images/<id>/stand.png` 等）と TTS のボイスIDに使用する。
 
 ### GET /api/messages/next  （AI会話取得API）
 - DB から `speaker="ai"` かつ未再生フラグ=未再生 の最古レコードを1件返す
@@ -326,7 +355,7 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1
 | Pythonバージョン | 3.13 |
 | ElevenLabsプラン | Creator で開始、不足時 Pro へ |
 | キャプチャ方式 | Python ネイティブ（`mss` + `pygetwindow`、ウィンドウタイトル指定）。加工後JPGのみ保存 |
-| キャラクター管理 | `character.current_id`（A-Za-z 1-16文字）で識別。会話履歴・記憶テーブルはこのIDで分離 |
+| キャラクター管理 | `character.current_id`（A-Za-z 1-16文字、`--char_id` で上書き可）で識別。`backend/characters/<id>/` にプロンプト・setting.yaml、`frontend/images/<id>/` に立ち絵を配置。会話履歴・記憶テーブルもこのIDで分離 |
 | Day（プレイ日） | 整数。`--day` で指定、未指定なら現キャラの最新履歴の day を継続、無ければ 1。`messages` / `mid_term_memories` の挿入時に必ず書き込み、生成プロンプトの履歴取得は現 Day で絞り込み |
 | デイミッション | `missions` テーブル（`character_id` × `day` で1件）。フロントから GET/PUT で編集。生成プロンプトにも注入 |
 | 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加）。長期は未実装 |

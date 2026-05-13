@@ -1,0 +1,5 @@
+# キャラクター設定（このディレクトリのキャラ）
+# キャラ名称（プロンプト等で参照される表示名）
+name: "ひな"
+# ElevenLabs のボイスID。フロントエンドに渡され TTS で使用される
+voice_id: "lhTvHflPVOqgSWyuWQry"

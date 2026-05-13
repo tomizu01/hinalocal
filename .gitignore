@@ -15,8 +15,7 @@ backend/config.yaml
 frontend/config.js
 
 # Large character image assets (managed outside repo)
-frontend/images/stand.png
-frontend/images/talk.png
+frontend/images/
 
 # Game capture images (local-only)
 captures/*.png

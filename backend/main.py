@@ -30,6 +30,7 @@ logging.basicConfig(
 logger = logging.getLogger("hinalive")
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
+CHARACTERS_DIR = Path(__file__).parent / "characters"
 
 CHARACTER_ID_RE = re.compile(r"^[A-Za-z]{1,16}$")
 
@@ -43,27 +44,63 @@ def validate_character_id(cid: Any) -> str:
     return cid
 
 
+def character_dir(character_id: str) -> Path:
+    return CHARACTERS_DIR / character_id
+
+
+def character_prompt_path(character_id: str, filename: str) -> Path:
+    return character_dir(character_id) / "prompts" / filename
+
+
+def load_character_setting(character_id: str) -> dict[str, Any]:
+    """backend/characters/<id>/setting.yaml を読み、name / voice_id を取り出す。"""
+    path = character_dir(character_id) / "setting.yaml"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"キャラクター設定ファイルが見つかりません: {path}"
+        )
+    with path.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    name = data.get("name")
+    voice_id = data.get("voice_id")
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"{path}: 'name' は非空文字列である必要があります")
+    if not isinstance(voice_id, str) or not voice_id:
+        raise ValueError(f"{path}: 'voice_id' は非空文字列である必要があります")
+    return {"name": name, "voice_id": voice_id}
+
+
 def load_config() -> dict[str, Any]:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    cheer_override = os.environ.get("HINALIVE_CHEER_FILE")
-    if cheer_override:
-        prompts_dir = Path(cfg["prompts"]["cheer_path"]).parent
-        override_path = prompts_dir / cheer_override
-        if not override_path.suffix:
-            override_path = override_path.with_suffix(".md")
-        if not override_path.exists():
-            raise FileNotFoundError(
-                f"指定されたcheerファイルが見つかりません: {override_path}"
-            )
-        cfg["prompts"]["cheer_path"] = str(override_path)
-        logger.info("cheerプロンプトを上書き: %s", override_path)
+    # --char_id で character.current_id を上書き
+    char_id_override = os.environ.get("HINALIVE_CHAR_ID")
+    if char_id_override:
+        cfg["character"]["current_id"] = char_id_override
+        logger.info("キャラクターIDを上書き: %s", char_id_override)
+    # character_id 検証
+    character_id = validate_character_id(cfg["character"]["current_id"])
+
+    # キャラ別プロンプトのパスを char_id から導出
+    cfg.setdefault("prompts", {})
+    cfg["prompts"]["character_path"] = str(
+        character_prompt_path(character_id, "character.md")
+    )
+    cheer_filename = os.environ.get("HINALIVE_CHEER_FILE") or "cheer.md"
+    cheer_path = character_prompt_path(character_id, cheer_filename)
+    if not cheer_path.suffix:
+        cheer_path = cheer_path.with_suffix(".md")
+    if not cheer_path.exists():
+        raise FileNotFoundError(
+            f"cheerプロンプトが見つかりません: {cheer_path}"
+        )
+    cfg["prompts"]["cheer_path"] = str(cheer_path)
+    logger.info("cheerプロンプト: %s", cheer_path)
+
     window_override = os.environ.get("HINALIVE_WINDOW_TITLE")
     if window_override:
         cfg["capture"]["window_title"] = window_override
         logger.info("ウィンドウタイトルを上書き: %s", window_override)
-    # character_id 検証
-    validate_character_id(cfg["character"]["current_id"])
     return cfg
 
 
@@ -785,9 +822,17 @@ def resolve_current_day(db_path: str, character_id: str) -> int:
 async def lifespan(app: FastAPI):
     cfg = load_config()
     app.state.config = cfg
-    init_db(cfg["database"]["path"], cfg["character"]["current_id"])
+    character_id = cfg["character"]["current_id"]
+    app.state.character_setting = load_character_setting(character_id)
+    logger.info(
+        "キャラクター設定読み込み: id=%s name=%s voice_id=%s",
+        character_id,
+        app.state.character_setting["name"],
+        app.state.character_setting["voice_id"],
+    )
+    init_db(cfg["database"]["path"], character_id)
     app.state.current_day = resolve_current_day(
-        cfg["database"]["path"], cfg["character"]["current_id"]
+        cfg["database"]["path"], character_id
     )
     app.state.gemini_client = build_gemini_client(cfg["gemini"]["api_key"])
     app.state.model_names = {
@@ -850,6 +895,17 @@ async def get_next_message():
         "speaker": row["speaker"],
         "content": row["content"],
         "created_at": row["created_at"],
+    }
+
+
+@app.get("/api/character")
+async def get_character():
+    cfg = app.state.config
+    setting = app.state.character_setting
+    return {
+        "id": cfg["character"]["current_id"],
+        "name": setting["name"],
+        "voice_id": setting["voice_id"],
     }
 
 
@@ -931,8 +987,14 @@ app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="fronte
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="hinalive backend")
     parser.add_argument(
+        "--char_id",
+        help="キャラクターIDを指定 (config.yaml の character.current_id を上書き)。"
+        "A-Za-z 1-16文字",
+    )
+    parser.add_argument(
         "--cheer",
-        help="cheer.mdの代わりに使うファイル名 (backend/prompts/ 配下)。拡張子省略可",
+        help="cheer.mdの代わりに使うファイル名"
+        " (backend/characters/<char_id>/prompts/ 配下)。拡張子省略可",
     )
     parser.add_argument(
         "--window",
@@ -945,6 +1007,8 @@ if __name__ == "__main__":
         "未指定時は直近履歴の day を継続、履歴が無ければ 1",
     )
     args = parser.parse_args()
+    if args.char_id:
+        os.environ["HINALIVE_CHAR_ID"] = args.char_id
     if args.cheer:
         os.environ["HINALIVE_CHEER_FILE"] = args.cheer
     if args.window:

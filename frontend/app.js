@@ -17,11 +17,21 @@
   const missionCancelBtn = document.getElementById("mission-cancel-btn");
   const missionModal = document.getElementById("mission-modal");
 
+  let characterInfo = null;
+
   function setCharacterState(state) {
-    const src = state === "talk" ? "images/talk.png" : "images/stand.png";
+    if (!characterInfo) return;
+    const file = state === "talk" ? "talk.png" : "stand.png";
+    const src = `images/${characterInfo.id}/${file}`;
     if (!characterImg.src.endsWith(src)) {
       characterImg.src = src;
     }
+  }
+
+  async function fetchCharacter() {
+    const res = await fetch("/api/character");
+    if (!res.ok) throw new Error(`status ${res.status}`);
+    return res.json();
   }
 
   function setLastPlayer(text) {
@@ -69,8 +79,10 @@
 
   async function synthesizeSpeech(text) {
     const e = cfg.elevenlabs;
+    const voiceId = characterInfo && characterInfo.voice_id;
+    if (!voiceId) throw new Error("voice_id 未取得");
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(
-      e.voiceId
+      voiceId
     )}`;
     const res = await fetch(url, {
       method: "POST",
@@ -358,7 +370,28 @@
 
   const overlay = document.getElementById("start-overlay");
   const startBtn = document.getElementById("start-btn");
+
+  (async () => {
+    try {
+      characterInfo = await fetchCharacter();
+      setCharacterState("stand");
+    } catch (e) {
+      console.error("キャラ情報取得失敗", e);
+      setStatus("キャラ情報の取得に失敗しました");
+    }
+  })();
+
   startBtn.addEventListener("click", async () => {
+    if (!characterInfo) {
+      try {
+        characterInfo = await fetchCharacter();
+        setCharacterState("stand");
+      } catch (e) {
+        console.error("キャラ情報取得失敗", e);
+        setStatus("キャラ情報の取得に失敗しました");
+        return;
+      }
+    }
     try {
       const a = new Audio(
         "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4Ljc2LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAA"

@@ -12,7 +12,9 @@
       "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; cfg=main.load_config\\(\\); tmpl=main.read_prompt\\(cfg['prompts']['summary_path']\\); out=tmpl.format\\(target_chars=100, history_text='AI: hello\\\\nプレイヤー: hi', game_name=cfg['game']['name']\\); print\\('--- rendered ---'\\); print\\(out\\)\")",
       "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; print\\('OK'\\); print\\('fetch_recent_mid_term_memories:', hasattr\\(main,'fetch_recent_mid_term_memories'\\)\\); print\\('mid_term_to_text:', hasattr\\(main,'mid_term_to_text'\\)\\)\")",
       "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; print\\('OK'\\)\")",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(mkdir -p C:/hinalive/backend/characters/hina/prompts C:/hinalive/frontend/images/hina)",
+      "Bash(git mv *)"
     ]
   }
 }

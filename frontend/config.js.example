@@ -6,7 +6,7 @@
 window.HINALIVE_CONFIG = {
   elevenlabs: {
     apiKey: "YOUR_ELEVENLABS_API_KEY_HERE",
-    voiceId: "YOUR_VOICE_ID_HERE",
+    // voiceId はバックエンド /api/character から取得する（キャラ別 setting.yaml）
     modelId: "eleven_v3",
     languageCode: "ja",
     outputFormat: "mp3_44100_64",
