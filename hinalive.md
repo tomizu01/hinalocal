@@ -159,6 +159,7 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 6. プロンプト構築：
    - キャラ設定プロンプト（`character.md`）
    - 実況応援プロンプト（`config.yaml` で指定された active な game プロンプト）
+   - 「本日のミッション：」：現キャラ・現 Day の `missions.content`（未設定時はブロックごと省略）
    - 「直近の会話履歴（古い順）」：`AI: ～` / `プレイヤー: ～` の繰り返し形式
    - 「ここまでのプレイの概要（古い順）」：中期記憶の要約を段落区切りで列挙
    - 最新キャプチャ画像1枚を添付（履歴に画像は含めない）
@@ -191,6 +192,16 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 - 未再生メッセージがない場合は空レスポンス
 - 取りこぼし許容（エラー多発時に2段階フラグ化を再検討）
 
+### GET /api/mission  （デイミッション取得API）
+- 現キャラ・現在の Day に紐づく `missions.content` を返す（未設定なら空文字）
+- レスポンス: `{"day": <int>, "content": <str>}`
+
+### PUT /api/mission  （デイミッション更新API）
+- リクエスト: `{"content": "<本文>"}`
+- 現キャラ・現在の Day で upsert（`ON CONFLICT(character_id, day) DO UPDATE`）
+- 本文が空文字（前後空白除去後）の場合は該当行を **DELETE**（未設定状態へ戻す）
+- レスポンス: `{"day": <int>, "content": <保存後の文字列>}`
+
 ### POST /api/messages/player  （プレイヤー会話保存API）
 - フロントから送られたテキスト（手入力 or 音声入力）をDBに保存
 - speaker="player"、未再生フラグは不要（または常に再生済扱い）
@@ -211,6 +222,16 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 - `day` INTEGER  -- プレイ日。挿入時は `app.state.current_day` を書き込む。既存 NULL 行は 1 で backfill
 - INDEX `idx_messages_char_id` (`character_id`, `id` DESC)
 - INDEX `idx_messages_char_day` (`character_id`, `day`, `id` DESC)
+
+### `missions` テーブル（デイミッション = その日のプレイ目標）
+- `id` INTEGER PRIMARY KEY AUTOINCREMENT
+- `character_id` TEXT NOT NULL
+- `day` INTEGER NOT NULL
+- `content` TEXT NOT NULL  -- ミッション本文（プレイヤーが入力）
+- `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+- `updated_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+- UNIQUE (`character_id`, `day`)  -- 1日1キャラあたり1件
+- INDEX `idx_missions_char_day` (`character_id`, `day`)
 
 ### `mid_term_memories` テーブル（中期記憶 = 直近会話の要約）
 - `id` INTEGER PRIMARY KEY AUTOINCREMENT
@@ -236,9 +257,15 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 ## 画面構成
 画面は縦長（左 2/3 が ゲーム画面、右 1/3 にブラウザを縦長表示する想定）。
 上から順に：
-1. キャラ画像
-2. AI のメッセージ表示吹き出し
-3. プレイヤーのメッセージ入力欄（テキスト入力 + 音声入力ボタン + 音声入力AUTOボタン）
+1. デイミッション欄（`ミッション (Day N)` ラベル＋本文表示＋[編集]ボタン。編集モードでは入力欄＋[保存]/[キャンセル]）
+2. キャラ画像
+3. AI のメッセージ表示吹き出し
+4. プレイヤーのメッセージ入力欄（テキスト入力 + 音声入力ボタン + 音声入力AUTOボタン）
+
+### デイミッションUI挙動
+- 起動時に `GET /api/mission` を呼んで現 Day のミッションを表示。未設定なら `（未設定）` 表示
+- 「編集」クリックで input + [保存]/[キャンセル] 表示。Enter で保存、Esc でキャンセル
+- 「保存」で `PUT /api/mission` を呼び、空文字保存なら未設定状態へ戻る
 
 ## メッセージ受信ループ
 起動と同時に以下のループを開始：
@@ -300,6 +327,7 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1
 | キャプチャ方式 | Python ネイティブ（`mss` + `pygetwindow`、ウィンドウタイトル指定）。加工後JPGのみ保存 |
 | キャラクター管理 | `character.current_id`（A-Za-z 1-16文字）で識別。会話履歴・記憶テーブルはこのIDで分離 |
 | Day（プレイ日） | 整数。`--day` で指定、未指定なら現キャラの最新履歴の day を継続、無ければ 1。`messages` / `mid_term_memories` の挿入時に必ず書き込み、生成プロンプトの履歴取得は現 Day で絞り込み |
+| デイミッション | `missions` テーブル（`character_id` × `day` で1件）。フロントから GET/PUT で編集。生成プロンプトにも注入 |
 | 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加）。長期は未実装 |
 | 要約モデル | 中期記憶バッチは常に flash 固定 |
 | テキスト/音声同期 | 同時開始のみ、末尾ズレ許容（7文字/s 固定） |

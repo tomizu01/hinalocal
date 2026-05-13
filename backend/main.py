@@ -163,6 +163,25 @@ def init_db(db_path: str, default_character_id: str) -> None:
             "ON mid_term_memories(character_id, day, id DESC)"
         )
 
+        # ミッションテーブル（day × character_id で1件）
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS missions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                day INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(character_id, day)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_missions_char_day "
+            "ON missions(character_id, day)"
+        )
+
         cur = conn.execute(
             "UPDATE messages SET played = 1 WHERE speaker = 'ai' AND played = 0"
         )
@@ -287,6 +306,38 @@ def insert_mid_term_memory(
         )
         conn.commit()
         return cur.lastrowid
+
+
+def fetch_mission(db_path: str, character_id: str, day: int) -> str:
+    """現キャラ・day のミッション本文。なければ空文字。"""
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT content FROM missions WHERE character_id = ? AND day = ?",
+            (character_id, day),
+        ).fetchone()
+    return row["content"] if row else ""
+
+
+def upsert_mission(
+    db_path: str, character_id: str, day: int, content: str
+) -> None:
+    """現キャラ・day のミッションを upsert。空文字は削除扱い。"""
+    with db_connect(db_path) as conn:
+        if content == "":
+            conn.execute(
+                "DELETE FROM missions WHERE character_id = ? AND day = ?",
+                (character_id, day),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO missions (character_id, day, content) "
+                "VALUES (?, ?, ?) "
+                "ON CONFLICT(character_id, day) DO UPDATE SET "
+                "content = excluded.content, "
+                "updated_at = CURRENT_TIMESTAMP",
+                (character_id, day, content),
+            )
+        conn.commit()
 
 
 def fetch_recent_mid_term_memories(
@@ -436,12 +487,17 @@ def call_gemini(
     cheer_prompt: str,
     history_text: str,
     mid_term_text: str,
+    mission_text: str,
     image_path: Path,
 ) -> str:
     system_instruction = f"{character_prompt}\n\n---\n\n{cheer_prompt}"
     history_block = history_text if history_text else "（まだ会話履歴はありません）"
     mid_term_block = mid_term_text if mid_term_text else "（まだプレイ概要はありません）"
+    mission_block = (
+        f"本日のミッション：\n{mission_text}\n\n" if mission_text else ""
+    )
     user_text = (
+        f"{mission_block}"
         "直近の会話履歴（古い順）：\n"
         f"{history_block}\n\n"
         "ここまでのプレイの概要（古い順）：\n"
@@ -536,6 +592,10 @@ async def main_loop(app: FastAPI) -> None:
             )
             mid_term_text = mid_term_to_text(mid_term_rows)
 
+            mission_text = await asyncio.to_thread(
+                fetch_mission, db_path, character_id, current_day
+            )
+
             tier = app.state.model_tier
             model = app.state.model_names[tier]
             try:
@@ -547,6 +607,7 @@ async def main_loop(app: FastAPI) -> None:
                     cheer_prompt,
                     history_text,
                     mid_term_text,
+                    mission_text,
                     processed,
                 )
             except Exception:
@@ -771,6 +832,10 @@ class ModelTierUpdate(BaseModel):
     tier: str
 
 
+class MissionUpdate(BaseModel):
+    content: str
+
+
 @app.get("/api/messages/next")
 async def get_next_message():
     cfg = app.state.config
@@ -804,6 +869,39 @@ async def set_model(payload: ModelTierUpdate):
     app.state.model_tier = tier
     logger.info("モデル切替: tier=%s model=%s", tier, app.state.model_names[tier])
     return {"tier": tier, "model": app.state.model_names[tier]}
+
+
+@app.get("/api/mission")
+async def get_mission():
+    cfg = app.state.config
+    character_id = cfg["character"]["current_id"]
+    current_day = app.state.current_day
+    content = await asyncio.to_thread(
+        fetch_mission, cfg["database"]["path"], character_id, current_day
+    )
+    return {"day": current_day, "content": content}
+
+
+@app.put("/api/mission")
+async def put_mission(payload: MissionUpdate):
+    cfg = app.state.config
+    character_id = cfg["character"]["current_id"]
+    current_day = app.state.current_day
+    content = payload.content.strip()
+    await asyncio.to_thread(
+        upsert_mission,
+        cfg["database"]["path"],
+        character_id,
+        current_day,
+        content,
+    )
+    logger.info(
+        "ミッション更新: character=%s day=%s content=%s",
+        character_id,
+        current_day,
+        content[:40] if content else "(空)",
+    )
+    return {"day": current_day, "content": content}
 
 
 @app.post("/api/messages/player")

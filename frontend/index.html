@@ -13,6 +13,24 @@
   </div>
 
   <main class="app">
+    <section class="mission" id="mission-section">
+      <div class="mission-view">
+        <span class="mission-label">ミッション <span id="mission-day"></span></span>
+        <span id="mission-text" class="mission-text"></span>
+        <button type="button" id="mission-edit-btn">編集</button>
+      </div>
+      <div class="mission-edit hidden">
+        <input
+          type="text"
+          id="mission-input"
+          placeholder="今日のミッション..."
+          autocomplete="off"
+        />
+        <button type="button" id="mission-save-btn">保存</button>
+        <button type="button" id="mission-cancel-btn">キャンセル</button>
+      </div>
+    </section>
+
     <section class="character">
       <img id="character-img" src="images/stand.png" alt="character" />
     </section>

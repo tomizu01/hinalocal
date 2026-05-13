@@ -10,6 +10,14 @@
   const statusEl = document.getElementById("status-text");
   const lastPlayerEl = document.getElementById("last-player");
   const characterImg = document.getElementById("character-img");
+  const missionView = document.querySelector(".mission-view");
+  const missionEdit = document.querySelector(".mission-edit");
+  const missionTextEl = document.getElementById("mission-text");
+  const missionDayEl = document.getElementById("mission-day");
+  const missionInput = document.getElementById("mission-input");
+  const missionEditBtn = document.getElementById("mission-edit-btn");
+  const missionSaveBtn = document.getElementById("mission-save-btn");
+  const missionCancelBtn = document.getElementById("mission-cancel-btn");
 
   function setCharacterState(state) {
     const src = state === "talk" ? "images/talk.png" : "images/stand.png";
@@ -253,6 +261,69 @@
   });
 
   fetchModelTier();
+
+  function applyMission(data) {
+    missionTextEl.textContent = data.content || "";
+    missionDayEl.textContent = data.day != null ? `(Day ${data.day})` : "";
+  }
+
+  function setMissionMode(editing) {
+    if (editing) {
+      missionInput.value = missionTextEl.textContent || "";
+      missionView.classList.add("hidden");
+      missionEdit.classList.remove("hidden");
+      missionInput.focus();
+      missionInput.select();
+    } else {
+      missionEdit.classList.add("hidden");
+      missionView.classList.remove("hidden");
+    }
+  }
+
+  async function fetchMission() {
+    try {
+      const res = await fetch("/api/mission");
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = await res.json();
+      applyMission(data);
+    } catch (e) {
+      console.warn("ミッション取得失敗", e);
+    }
+  }
+
+  async function saveMission(text) {
+    try {
+      const res = await fetch("/api/mission", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: text }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = await res.json();
+      applyMission(data);
+      setMissionMode(false);
+    } catch (e) {
+      console.error("ミッション保存失敗", e);
+      setStatus("ミッション保存失敗");
+    }
+  }
+
+  missionEditBtn.addEventListener("click", () => setMissionMode(true));
+  missionCancelBtn.addEventListener("click", () => setMissionMode(false));
+  missionSaveBtn.addEventListener("click", () => {
+    saveMission(missionInput.value.trim());
+  });
+  missionInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      saveMission(missionInput.value.trim());
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setMissionMode(false);
+    }
+  });
+
+  fetchMission();
 
   playerForm.addEventListener("submit", async (e) => {
     e.preventDefault();

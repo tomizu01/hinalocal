@@ -20,6 +20,64 @@ body {
   gap: 12px;
 }
 
+.mission {
+  flex: 0 0 auto;
+  background: #11161e;
+  border: 1px solid #2a3140;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+
+.mission-view,
+.mission-edit {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mission-edit.hidden,
+.mission-view.hidden {
+  display: none;
+}
+
+.mission-label {
+  color: #9aa3af;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.mission-text {
+  flex: 1 1 auto;
+  color: #e6e8eb;
+  font-size: 16px;
+  word-break: break-word;
+}
+
+.mission-text:empty::before {
+  content: "（未設定）";
+  color: #5a6271;
+}
+
+#mission-input {
+  flex: 1 1 auto;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #2a3140;
+  background: #0e1116;
+  color: #e6e8eb;
+  font-size: 14px;
+}
+
+#mission-input:focus {
+  outline: none;
+  border-color: #5aa9ff;
+}
+
+.mission button {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
 .character {
   flex: 0 0 auto;
   display: flex;
