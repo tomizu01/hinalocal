@@ -22,22 +22,13 @@ body {
 
 .mission {
   flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   background: #11161e;
   border: 1px solid #2a3140;
   border-radius: 8px;
   padding: 8px 12px;
-}
-
-.mission-view,
-.mission-edit {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mission-edit.hidden,
-.mission-view.hidden {
-  display: none;
 }
 
 .mission-label {
@@ -58,9 +49,45 @@ body {
   color: #5a6271;
 }
 
+.mission button {
+  padding: 6px 10px;
+  font-size: 13px;
+}
+
+.mission-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 17, 22, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 20;
+}
+
+.mission-modal.hidden {
+  display: none;
+}
+
+.mission-modal-box {
+  background: #1a1f29;
+  border: 1px solid #2a3140;
+  border-radius: 12px;
+  padding: 20px;
+  width: min(90vw, 480px);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mission-modal-title {
+  margin: 0;
+  font-size: 16px;
+  color: #e6e8eb;
+}
+
 #mission-input {
-  flex: 1 1 auto;
-  padding: 8px 10px;
+  width: 100%;
+  padding: 10px 12px;
   border-radius: 6px;
   border: 1px solid #2a3140;
   background: #0e1116;
@@ -73,9 +100,10 @@ body {
   border-color: #5aa9ff;
 }
 
-.mission button {
-  padding: 6px 10px;
-  font-size: 13px;
+.mission-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .character {

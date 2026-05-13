@@ -10,14 +10,12 @@
   const statusEl = document.getElementById("status-text");
   const lastPlayerEl = document.getElementById("last-player");
   const characterImg = document.getElementById("character-img");
-  const missionView = document.querySelector(".mission-view");
-  const missionEdit = document.querySelector(".mission-edit");
   const missionTextEl = document.getElementById("mission-text");
-  const missionDayEl = document.getElementById("mission-day");
   const missionInput = document.getElementById("mission-input");
   const missionEditBtn = document.getElementById("mission-edit-btn");
   const missionSaveBtn = document.getElementById("mission-save-btn");
   const missionCancelBtn = document.getElementById("mission-cancel-btn");
+  const missionModal = document.getElementById("mission-modal");
 
   function setCharacterState(state) {
     const src = state === "talk" ? "images/talk.png" : "images/stand.png";
@@ -264,20 +262,17 @@
 
   function applyMission(data) {
     missionTextEl.textContent = data.content || "";
-    missionDayEl.textContent = data.day != null ? `(Day ${data.day})` : "";
   }
 
-  function setMissionMode(editing) {
-    if (editing) {
-      missionInput.value = missionTextEl.textContent || "";
-      missionView.classList.add("hidden");
-      missionEdit.classList.remove("hidden");
-      missionInput.focus();
-      missionInput.select();
-    } else {
-      missionEdit.classList.add("hidden");
-      missionView.classList.remove("hidden");
-    }
+  function openMissionModal() {
+    missionInput.value = missionTextEl.textContent || "";
+    missionModal.classList.remove("hidden");
+    missionInput.focus();
+    missionInput.select();
+  }
+
+  function closeMissionModal() {
+    missionModal.classList.add("hidden");
   }
 
   async function fetchMission() {
@@ -301,15 +296,15 @@
       if (!res.ok) throw new Error(`status ${res.status}`);
       const data = await res.json();
       applyMission(data);
-      setMissionMode(false);
+      closeMissionModal();
     } catch (e) {
       console.error("ミッション保存失敗", e);
       setStatus("ミッション保存失敗");
     }
   }
 
-  missionEditBtn.addEventListener("click", () => setMissionMode(true));
-  missionCancelBtn.addEventListener("click", () => setMissionMode(false));
+  missionEditBtn.addEventListener("click", openMissionModal);
+  missionCancelBtn.addEventListener("click", closeMissionModal);
   missionSaveBtn.addEventListener("click", () => {
     saveMission(missionInput.value.trim());
   });
@@ -319,8 +314,11 @@
       saveMission(missionInput.value.trim());
     } else if (e.key === "Escape") {
       e.preventDefault();
-      setMissionMode(false);
+      closeMissionModal();
     }
+  });
+  missionModal.addEventListener("click", (e) => {
+    if (e.target === missionModal) closeMissionModal();
   });
 
   fetchMission();

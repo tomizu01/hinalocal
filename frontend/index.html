@@ -14,22 +14,26 @@
 
   <main class="app">
     <section class="mission" id="mission-section">
-      <div class="mission-view">
-        <span class="mission-label">ミッション <span id="mission-day"></span></span>
-        <span id="mission-text" class="mission-text"></span>
-        <button type="button" id="mission-edit-btn">編集</button>
-      </div>
-      <div class="mission-edit hidden">
+      <span class="mission-label">現在のミッション：</span>
+      <span id="mission-text" class="mission-text"></span>
+      <button type="button" id="mission-edit-btn">編集</button>
+    </section>
+
+    <div id="mission-modal" class="mission-modal hidden">
+      <div class="mission-modal-box">
+        <h3 class="mission-modal-title">ミッションを編集</h3>
         <input
           type="text"
           id="mission-input"
           placeholder="今日のミッション..."
           autocomplete="off"
         />
-        <button type="button" id="mission-save-btn">保存</button>
-        <button type="button" id="mission-cancel-btn">キャンセル</button>
+        <div class="mission-modal-actions">
+          <button type="button" id="mission-save-btn">保存</button>
+          <button type="button" id="mission-cancel-btn">キャンセル</button>
+        </div>
       </div>
-    </section>
+    </div>
 
     <section class="character">
       <img id="character-img" src="images/stand.png" alt="character" />
