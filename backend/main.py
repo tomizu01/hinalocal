@@ -82,7 +82,9 @@ def init_db(db_path: str, default_character_id: str) -> None:
                 speaker TEXT NOT NULL,
                 content TEXT NOT NULL,
                 played INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                character_id TEXT,
+                day INTEGER
             )
             """
         )
@@ -101,9 +103,20 @@ def init_db(db_path: str, default_character_id: str) -> None:
                 cur.rowcount,
                 default_character_id,
             )
+        # messages.day カラム
+        if not _column_exists(conn, "messages", "day"):
+            conn.execute("ALTER TABLE messages ADD COLUMN day INTEGER")
+            logger.info("messages.day カラムを追加しました")
+        cur = conn.execute("UPDATE messages SET day = 1 WHERE day IS NULL")
+        if cur.rowcount > 0:
+            logger.info("messages.day を %d 行 backfill (=1)", cur.rowcount)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_messages_char_id "
             "ON messages(character_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_char_day "
+            "ON messages(character_id, day, id DESC)"
         )
 
         # 中期記憶テーブル
@@ -113,13 +126,41 @@ def init_db(db_path: str, default_character_id: str) -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 character_id TEXT NOT NULL,
                 summary TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                day INTEGER,
+                last_message_id INTEGER
             )
             """
         )
+        if not _column_exists(conn, "mid_term_memories", "day"):
+            conn.execute("ALTER TABLE mid_term_memories ADD COLUMN day INTEGER")
+            logger.info("mid_term_memories.day カラムを追加しました")
+        cur = conn.execute(
+            "UPDATE mid_term_memories SET day = 1 WHERE day IS NULL"
+        )
+        if cur.rowcount > 0:
+            logger.info("mid_term_memories.day を %d 行 backfill (=1)", cur.rowcount)
+        if not _column_exists(conn, "mid_term_memories", "last_message_id"):
+            conn.execute(
+                "ALTER TABLE mid_term_memories ADD COLUMN last_message_id INTEGER"
+            )
+            logger.info("mid_term_memories.last_message_id カラムを追加しました")
+        cur = conn.execute(
+            "UPDATE mid_term_memories SET last_message_id = 0 "
+            "WHERE last_message_id IS NULL"
+        )
+        if cur.rowcount > 0:
+            logger.info(
+                "mid_term_memories.last_message_id を %d 行 backfill (=0)",
+                cur.rowcount,
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mid_term_char "
             "ON mid_term_memories(character_id, id DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mid_term_char_day "
+            "ON mid_term_memories(character_id, day, id DESC)"
         )
 
         cur = conn.execute(
@@ -137,25 +178,32 @@ def db_connect(db_path: str) -> sqlite3.Connection:
 
 
 def fetch_recent_history(
-    db_path: str, character_id: str, limit: int
+    db_path: str, character_id: str, limit: int, day: int
 ) -> list[sqlite3.Row]:
+    """現在のキャラ・day の直近 limit 件を古い順で返す。"""
     with db_connect(db_path) as conn:
         rows = conn.execute(
             "SELECT speaker, content FROM messages "
-            "WHERE character_id = ? ORDER BY id DESC LIMIT ?",
-            (character_id, limit),
+            "WHERE character_id = ? AND day = ? "
+            "ORDER BY id DESC LIMIT ?",
+            (character_id, day, limit),
         ).fetchall()
     return list(reversed(rows))
 
 
 def insert_message(
-    db_path: str, character_id: str, speaker: str, content: str, played: int = 0
+    db_path: str,
+    character_id: str,
+    speaker: str,
+    content: str,
+    day: int,
+    played: int = 0,
 ) -> int:
     with db_connect(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO messages (character_id, speaker, content, played) "
-            "VALUES (?, ?, ?, ?)",
-            (character_id, speaker, content, played),
+            "INSERT INTO messages (character_id, speaker, content, played, day) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (character_id, speaker, content, played, day),
         )
         conn.commit()
         return cur.lastrowid
@@ -172,20 +220,70 @@ def fetch_latest_player_id(db_path: str, character_id: str) -> int:
     return row["id"] if row else 0
 
 
-def fetch_max_message_id(db_path: str, character_id: str) -> int:
+def fetch_latest_day(db_path: str, character_id: str) -> int | None:
+    """現在のキャラの中で最新 created_at の行の day を返す。なければ None。"""
     with db_connect(db_path) as conn:
         row = conn.execute(
-            "SELECT MAX(id) AS max_id FROM messages WHERE character_id = ?",
+            "SELECT day FROM messages WHERE character_id = ? "
+            "ORDER BY created_at DESC, id DESC LIMIT 1",
             (character_id,),
         ).fetchone()
-    return row["max_id"] if row and row["max_id"] is not None else 0
+    if row is None or row["day"] is None:
+        return None
+    return int(row["day"])
 
 
-def insert_mid_term_memory(db_path: str, character_id: str, summary: str) -> int:
+def fetch_mid_term_last_message_id(
+    db_path: str, character_id: str, day: int
+) -> int:
+    """現在のキャラ・day の mid_term_memories.last_message_id の最大値。なければ 0。"""
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(last_message_id) AS m FROM mid_term_memories "
+            "WHERE character_id = ? AND day = ?",
+            (character_id, day),
+        ).fetchone()
+    return row["m"] if row and row["m"] is not None else 0
+
+
+def fetch_max_message_id_today(
+    db_path: str, character_id: str, day: int
+) -> int:
+    """現在のキャラ・day の messages.id の最大値。なければ 0。"""
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(id) AS m FROM messages "
+            "WHERE character_id = ? AND day = ?",
+            (character_id, day),
+        ).fetchone()
+    return row["m"] if row and row["m"] is not None else 0
+
+
+def count_messages_after(
+    db_path: str, character_id: str, day: int, last_message_id: int
+) -> int:
+    """現在のキャラ・day で id > last_message_id の messages 件数。"""
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM messages "
+            "WHERE character_id = ? AND day = ? AND id > ?",
+            (character_id, day, last_message_id),
+        ).fetchone()
+    return row["c"] if row else 0
+
+
+def insert_mid_term_memory(
+    db_path: str,
+    character_id: str,
+    summary: str,
+    day: int,
+    last_message_id: int,
+) -> int:
     with db_connect(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO mid_term_memories (character_id, summary) VALUES (?, ?)",
-            (character_id, summary),
+            "INSERT INTO mid_term_memories "
+            "(character_id, summary, day, last_message_id) VALUES (?, ?, ?, ?)",
+            (character_id, summary, day, last_message_id),
         )
         conn.commit()
         return cur.lastrowid
@@ -376,6 +474,7 @@ async def main_loop(app: FastAPI) -> None:
     cfg = app.state.config
     db_path = cfg["database"]["path"]
     character_id = cfg["character"]["current_id"]
+    current_day = app.state.current_day
     window_title = cfg["capture"]["window_title"]
     processing_dir = Path(cfg["capture"]["processing_dir"])
     processing_dir.mkdir(parents=True, exist_ok=True)
@@ -389,8 +488,9 @@ async def main_loop(app: FastAPI) -> None:
     client: genai.Client = app.state.gemini_client
 
     logger.info(
-        "メインループ開始: character=%s window_title=%r interval=%ss",
+        "メインループ開始: character=%s day=%s window_title=%r interval=%ss",
         character_id,
+        current_day,
         window_title,
         interval,
     )
@@ -423,7 +523,11 @@ async def main_loop(app: FastAPI) -> None:
                 continue
 
             history_rows = await asyncio.to_thread(
-                fetch_recent_history, db_path, character_id, history_count
+                fetch_recent_history,
+                db_path,
+                character_id,
+                history_count,
+                current_day,
             )
             history_text = history_to_text(history_rows)
 
@@ -456,9 +560,20 @@ async def main_loop(app: FastAPI) -> None:
                 continue
 
             await asyncio.to_thread(
-                insert_message, db_path, character_id, "ai", message, 0
+                insert_message,
+                db_path,
+                character_id,
+                "ai",
+                message,
+                current_day,
+                0,
             )
-            logger.info("AI発話を保存 (tier=%s): %s", tier, message[:40])
+            logger.info(
+                "AI発話を保存 (tier=%s, day=%s): %s",
+                tier,
+                current_day,
+                message[:40],
+            )
 
         except asyncio.CancelledError:
             logger.info("メインループ停止")
@@ -470,12 +585,17 @@ async def main_loop(app: FastAPI) -> None:
 
 
 async def mid_term_memory_loop(app: FastAPI) -> None:
-    """中期記憶バッチループ。前回処理時から batch_threshold 件以上の
-    新規会話が積まれていれば、直近 window_size 件を flash モデルで要約して
-    mid_term_memories に保存する。"""
+    """中期記憶バッチループ。
+    現在のキャラ・現在の day における mid_term_memories.last_message_id の
+    最大値を取得し、それより新しい messages が batch_threshold 件以上溜まって
+    いれば、直近 window_size 件（現 day 内）を flash モデルで要約して
+    mid_term_memories に保存する。挿入時に対象レコードの最大 id を
+    last_message_id として記録する。
+    """
     cfg = app.state.config
     db_path = cfg["database"]["path"]
     character_id = cfg["character"]["current_id"]
+    current_day = app.state.current_day
     mt_cfg = cfg["memory"]["mid_term"]
     window_size = mt_cfg["window_size"]
     target_chars = mt_cfg["target_chars"]
@@ -486,12 +606,11 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
     summary_template = read_prompt(cfg["prompts"]["summary_path"])
     client: genai.Client = app.state.gemini_client
 
-    last_seen = await asyncio.to_thread(fetch_max_message_id, db_path, character_id)
     logger.info(
-        "中期記憶ループ開始: character=%s game=%s last_seen=%d threshold=%d window=%d interval=%ss",
+        "中期記憶ループ開始: character=%s day=%s game=%s threshold=%d window=%d interval=%ss",
         character_id,
+        current_day,
         game_name,
-        last_seen,
         batch_threshold,
         window_size,
         interval,
@@ -499,14 +618,39 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
 
     while True:
         try:
-            latest = await asyncio.to_thread(
-                fetch_max_message_id, db_path, character_id
+            last_msg_id = await asyncio.to_thread(
+                fetch_mid_term_last_message_id,
+                db_path,
+                character_id,
+                current_day,
             )
-            delta = latest - last_seen
-            if delta >= batch_threshold:
-                logger.info("中期記憶バッチ実行 (delta=%d, latest=%d)", delta, latest)
+            new_count = await asyncio.to_thread(
+                count_messages_after,
+                db_path,
+                character_id,
+                current_day,
+                last_msg_id,
+            )
+            if new_count >= batch_threshold:
+                latest = await asyncio.to_thread(
+                    fetch_max_message_id_today,
+                    db_path,
+                    character_id,
+                    current_day,
+                )
+                logger.info(
+                    "中期記憶バッチ実行 (day=%s, new=%d, last_msg_id=%d, latest=%d)",
+                    current_day,
+                    new_count,
+                    last_msg_id,
+                    latest,
+                )
                 history_rows = await asyncio.to_thread(
-                    fetch_recent_history, db_path, character_id, window_size
+                    fetch_recent_history,
+                    db_path,
+                    character_id,
+                    window_size,
+                    current_day,
                 )
                 history_text = history_to_text(history_rows)
                 try:
@@ -527,11 +671,18 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
                     logger.warning("要約結果が空でした (latest=%d)", latest)
                 else:
                     await asyncio.to_thread(
-                        insert_mid_term_memory, db_path, character_id, summary
+                        insert_mid_term_memory,
+                        db_path,
+                        character_id,
+                        summary,
+                        current_day,
+                        latest,
                     )
-                    last_seen = latest
                     logger.info(
-                        "中期記憶を保存 (latest=%d): %s", latest, summary[:60]
+                        "中期記憶を保存 (day=%s, last_message_id=%d): %s",
+                        current_day,
+                        latest,
+                        summary[:60],
                     )
         except asyncio.CancelledError:
             logger.info("中期記憶ループ停止")
@@ -545,11 +696,38 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
 VALID_TIERS = ("flash", "pro")
 
 
+def resolve_current_day(db_path: str, character_id: str) -> int:
+    """起動時の current_day を決定する。
+    1. HINALIVE_DAY が指定されていればそれを int として採用
+    2. なければ messages から現キャラの最新 created_at 行の day を取得
+    3. それもなければ 1
+    """
+    override = os.environ.get("HINALIVE_DAY")
+    if override:
+        try:
+            day = int(override)
+        except ValueError as e:
+            raise ValueError(
+                f"--day には整数を指定してください: {override!r}"
+            ) from e
+        logger.info("Day を起動オプションで指定: %d", day)
+        return day
+    latest = fetch_latest_day(db_path, character_id)
+    if latest is not None:
+        logger.info("Day を直近履歴から継続: %d (character=%s)", latest, character_id)
+        return latest
+    logger.info("Day を新規開始: 1 (character=%s)", character_id)
+    return 1
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     cfg = load_config()
     app.state.config = cfg
     init_db(cfg["database"]["path"], cfg["character"]["current_id"])
+    app.state.current_day = resolve_current_day(
+        cfg["database"]["path"], cfg["character"]["current_id"]
+    )
     app.state.gemini_client = build_gemini_client(cfg["gemini"]["api_key"])
     app.state.model_names = {
         "flash": cfg["gemini"]["flash_model"],
@@ -635,8 +813,15 @@ async def post_player_message(msg: PlayerMessage):
         raise HTTPException(status_code=400, detail="content is empty")
     cfg = app.state.config
     character_id = cfg["character"]["current_id"]
+    current_day = app.state.current_day
     new_id = await asyncio.to_thread(
-        insert_message, cfg["database"]["path"], character_id, "player", text, 1
+        insert_message,
+        cfg["database"]["path"],
+        character_id,
+        "player",
+        text,
+        current_day,
+        1,
     )
     return {"id": new_id}
 
@@ -655,11 +840,19 @@ if __name__ == "__main__":
         "--window",
         help="config.yaml の capture.window_title を上書きするウィンドウタイトル（部分一致）",
     )
+    parser.add_argument(
+        "--day",
+        type=int,
+        help="プレイ日 (Day) を整数で指定。1, 20260513 などどちらの運用も可。"
+        "未指定時は直近履歴の day を継続、履歴が無ければ 1",
+    )
     args = parser.parse_args()
     if args.cheer:
         os.environ["HINALIVE_CHEER_FILE"] = args.cheer
     if args.window:
         os.environ["HINALIVE_WINDOW_TITLE"] = args.window
+    if args.day is not None:
+        os.environ["HINALIVE_DAY"] = str(args.day)
 
     import uvicorn
 

@@ -100,6 +100,9 @@ hinalive/
 ### 起動時オプション
 - `--window <タイトル部分一致>` … `capture.window_title` を実行時に上書き
 - `--cheer <ファイル名>` … 実況応援プロンプトファイルを `prompts/` 配下から指定して上書き（拡張子省略可）
+- `--day <整数>` … プレイ日 (Day) を整数で指定（`1` のような連番でも `20260513` のような日付運用でも可）。
+  - 未指定時は、現キャラの `messages` で最新 `created_at` の行の `day` を取得して **継続**
+  - 履歴が1件もなければ `1` で新規開始
 
 ## frontend/config.js
 - ElevenLabs APIキー
@@ -131,6 +134,19 @@ hinalive/
 DB操作（会話履歴・各種記憶テーブル）はすべて `character.current_id` を WHERE 条件に含み、
 現在のキャラクターに紐づくレコードだけを読み書きする。
 
+## Day（プレイ日）の概念
+
+- 1回のプレイセッションを区切るための整数値。
+  - `1` のような連番運用（1日目、2日目…）と、`20260513` のような日付運用（YYYYMMDD）のどちらも想定。バックエンドは単に整数として扱う。
+- 起動時に **現在の Day を1つだけ確定** し、そのプロセスが終了するまで固定で使う（`app.state.current_day`）。
+- 確定ルール：
+  1. `--day <整数>` が指定されていればその値
+  2. なければ現キャラの `messages` で最新 `created_at` の行の `day` を採用（前回プレイの継続）
+  3. 履歴が1件もなければ `1`
+- 会話履歴・中期記憶レコードを **書き込む際は必ず現在の Day を埋める**。
+- メッセージ生成プロンプト用の **直近30件履歴取得は `day = 現在のDay` で絞り込む**（過去 Day のログは混ぜない）。
+- 中期記憶バッチの起動判定・要約対象・`last_message_id` 管理もすべて現 Day スコープ（後述）。
+
 ## メインループ処理
 
 1. `pygetwindow` で `capture.window_title` の部分一致するウィンドウを探す
@@ -139,7 +155,7 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 2. `mss` でそのウィンドウ領域をスクリーンショット → PIL.Image に変換
 3. `image.clip` で追加クリップ（ウィンドウ左上原点）→ `image.resize_width` でリサイズ
 4. `captures/processing/<unique>.jpg` として JPEG 保存（生PNGは保持しない）
-5. DBから現キャラの直近30件の会話履歴、および直近10件の中期記憶を取得（どちらも古い順に整列）
+5. DBから現キャラ・**現在の Day** の直近30件の会話履歴、および現キャラの直近10件の中期記憶を取得（どちらも古い順に整列）
 6. プロンプト構築：
    - キャラ設定プロンプト（`character.md`）
    - 実況応援プロンプト（`config.yaml` で指定された active な game プロンプト）
@@ -152,18 +168,18 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 
 ## 中期記憶バッチループ
 
-起動時に `last_seen = MAX(messages.id WHERE character_id=current)` で初期化。
-（既存履歴の即時要約を避けるため）。
 要約モデルは **常に flash 固定**（コスト・遅延優先）。
+判定・要約・記録のすべては **「現キャラ かつ 現在の Day」** スコープで動作する。
 
-1. 現キャラの最新 `messages.id` を取得し、`delta = latest - last_seen` を求める
-2. `delta < batch_threshold`（既定 20）ならスキップして手順4 へ
-3. `delta >= batch_threshold` の場合：
-   - 現キャラの直近 `window_size` 件（既定 30件）の会話履歴を取得
+1. `last_message_id = MAX(mid_term_memories.last_message_id WHERE character_id=current AND day=current_day)` を取得。レコードがなければ 0。
+2. `messages WHERE character_id=current AND day=current_day AND id > last_message_id` の件数を数える
+3. 件数が `batch_threshold`（既定 20）未満ならスキップして手順5 へ
+4. 件数が `batch_threshold` 以上の場合：
+   - `latest = MAX(messages.id WHERE character_id=current AND day=current_day)` を取得（＝今回の対象レコードのうち最大 id）
+   - 現キャラ・現 Day の直近 `window_size` 件（既定 30件）の会話履歴を取得
    - `prompts/summary.md` テンプレートを `{target_chars}` `{history_text}` `{game_name}` で埋めてプロンプト化
-   - flash モデルで要約 → `mid_term_memories` テーブルに `(character_id, summary)` を追加
-   - `last_seen = latest` に更新
-4. `interval_seconds`（既定 10秒）待ってループ先頭へ戻る
+   - flash モデルで要約 → `mid_term_memories` テーブルに `(character_id, summary, day=current_day, last_message_id=latest)` を追加
+5. `interval_seconds`（既定 10秒）待ってループ先頭へ戻る
 
 ※ 中期記憶の **会話生成プロンプトへの注入は本フェーズの対象外**（保存のみ実装）
 
@@ -192,18 +208,27 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 - `played` INTEGER NOT NULL DEFAULT 0  -- 0=未再生, 1=再生済
 - `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 - `character_id` TEXT  -- A-Za-z 1-16文字。起動時に既存 NULL 行は config の current_id で backfill
+- `day` INTEGER  -- プレイ日。挿入時は `app.state.current_day` を書き込む。既存 NULL 行は 1 で backfill
 - INDEX `idx_messages_char_id` (`character_id`, `id` DESC)
+- INDEX `idx_messages_char_day` (`character_id`, `day`, `id` DESC)
 
 ### `mid_term_memories` テーブル（中期記憶 = 直近会話の要約）
 - `id` INTEGER PRIMARY KEY AUTOINCREMENT
 - `character_id` TEXT NOT NULL
 - `summary` TEXT NOT NULL  -- 要約本文（既定 100文字程度）
 - `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+- `day` INTEGER  -- 要約を作った時点のプレイ日。既存 NULL 行は 1 で backfill
+- `last_message_id` INTEGER  -- この要約に取り込んだ `messages.id` の最大値（次回バッチ判定の基準）。既存 NULL 行は 0 で backfill
 - INDEX `idx_mid_term_char` (`character_id`, `id` DESC)
+- INDEX `idx_mid_term_char_day` (`character_id`, `day`, `id` DESC)
 
 ### マイグレーション方針
-- 起動時 `init_db` で `PRAGMA table_info(messages)` を見て `character_id` カラムが無ければ `ALTER TABLE ADD COLUMN`
-- `character_id IS NULL` の行は `config.character.current_id` で `UPDATE`
+- 起動時 `init_db` で `PRAGMA table_info(<table>)` を見て、不足カラム（`character_id`, `day`, `last_message_id`）があれば `ALTER TABLE ADD COLUMN` で追加
+- 既存行は以下の規則で backfill：
+  - `messages.character_id IS NULL` → `config.character.current_id`
+  - `messages.day IS NULL` → `1`
+  - `mid_term_memories.day IS NULL` → `1`
+  - `mid_term_memories.last_message_id IS NULL` → `0`
 - 上記は冪等で、再起動を繰り返しても副作用なし
 
 # フロントエンド仕様
@@ -274,7 +299,8 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1
 | ElevenLabsプラン | Creator で開始、不足時 Pro へ |
 | キャプチャ方式 | Python ネイティブ（`mss` + `pygetwindow`、ウィンドウタイトル指定）。加工後JPGのみ保存 |
 | キャラクター管理 | `character.current_id`（A-Za-z 1-16文字）で識別。会話履歴・記憶テーブルはこのIDで分離 |
-| 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（直近30件を100文字要約、20件溜まったら追加）。長期は未実装 |
+| Day（プレイ日） | 整数。`--day` で指定、未指定なら現キャラの最新履歴の day を継続、無ければ 1。`messages` / `mid_term_memories` の挿入時に必ず書き込み、生成プロンプトの履歴取得は現 Day で絞り込み |
+| 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加）。長期は未実装 |
 | 要約モデル | 中期記憶バッチは常に flash 固定 |
 | テキスト/音声同期 | 同時開始のみ、末尾ズレ許容（7文字/s 固定） |
 | 再生済フラグ | 取得時に即立てる（取りこぼし許容） |
