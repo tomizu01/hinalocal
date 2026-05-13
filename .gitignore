@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+backend/venv/
+
+# Local conversation DB (contains personal chat history)
+backend/data.db
+backend/*.db-journal
+backend/*.db-wal
+backend/*.db-shm
+
+# Secrets / per-environment config (API keys)
+backend/config.yaml
+frontend/config.js
+
+# Large character image assets (managed outside repo)
+frontend/images/stand.png
+frontend/images/talk.png
+
+# Game capture images (local-only)
+captures/*.png
+captures/*.jpg
+captures/*.jpeg
+captures/*.bmp
+captures/*.webp
+captures/processing/*
+!captures/processing/.gitkeep
+
+# OS / Editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

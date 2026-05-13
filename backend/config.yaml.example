@@ -1,0 +1,53 @@
+# このファイルは backend/config.yaml の雛形です。
+# このファイルをコピーして `config.yaml` を作成し、API キー等を埋めて使用してください。
+# 実体の config.yaml は .gitignore で除外されています。
+
+# Gemini設定
+gemini:
+  api_key: "YOUR_GEMINI_API_KEY_HERE"
+  flash_model: "gemini-3-flash-preview"
+  pro_model: "gemini-3.1-pro-preview"
+  # 起動直後のモデル ("flash" or "pro")
+  default_tier: "flash"
+
+# キャプチャ設定
+capture:
+  # ShareXが固定ファイル名で書き出す画像のフルパス
+  source_path: "C:/hinalive/captures/capture.png"
+  # rename後の作業フォルダ
+  processing_dir: "C:/hinalive/captures/processing"
+  # rename失敗時のリトライ間隔（秒）と上限回数
+  rename_retry_interval: 2
+  rename_retry_max: 5
+
+# 画像加工設定（ゲーム画面のクリップ）
+image:
+  # クリップ座標（左上 x1, y1 / 右下 x2, y2）
+  clip:
+    x1: 0
+    y1: 0
+    x2: 1920
+    y2: 1080
+  # リサイズ後の横幅（px）。縦は成り行き
+  resize_width: 768
+
+# 会話履歴
+history:
+  # Gemini呼び出し時に取得する直近の件数
+  recent_count: 30
+
+# メインループ
+loop:
+  # キャプチャ存在チェックの待機間隔（秒）
+  interval_seconds: 10
+
+# DB
+database:
+  path: "C:/hinalive/backend/data.db"
+
+# プロンプトファイル
+prompts:
+  # キャラ設定（常時ロード）
+  character_path: "C:/hinalive/backend/prompts/character.md"
+  # active なゲーム別 実況応援プロンプト。タイトル切り替え時はここを書き換える
+  task_path: "C:/hinalive/backend/prompts/minecraft.md"

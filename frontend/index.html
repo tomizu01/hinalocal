@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hinaft - Zwift応援</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="start-overlay" class="start-overlay">
+    <button type="button" id="start-btn">▶ 開始</button>
+    <p class="start-hint">クリックすると応援を開始します<br />（ブラウザの自動再生制限のため必要）</p>
+  </div>
+
+  <main class="app">
+    <section class="character">
+      <img id="character-img" src="images/stand.png" alt="character" />
+    </section>
+
+    <section class="bubble">
+      <p id="bubble-text"></p>
+    </section>
+
+    <section class="input-area">
+      <form id="player-form">
+        <input
+          type="text"
+          id="player-input"
+          placeholder="メッセージを入力..."
+          autocomplete="off"
+        />
+        <button type="submit" id="send-btn">送信</button>
+      </form>
+      <div class="mic-row">
+        <button type="button" id="mic-btn">🎤 音声入力</button>
+        <button type="button" id="auto-btn" aria-pressed="false">AUTO: OFF</button>
+        <button type="button" id="model-btn" data-tier="flash">モデル: FLASH</button>
+        <span id="status-text" class="status"></span>
+      </div>
+      <p id="last-player" class="last-player"></p>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

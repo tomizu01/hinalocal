@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(Get-ChildItem -Path C:\\\\hinalive\\\\backend -Force | Where-Object { $_.Name -notin 'venv','__pycache__' } | Format-Table Mode, LastWriteTime, Length, Name -AutoSize | Out-String)",
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\('C:\\\\hinalive\\\\setup.ps1'\\); $bytes[0..15] | ForEach-Object { $_.ToString\\('x2'\\) } | Out-String; Write-Output '---decoded---'; [System.Text.Encoding]::GetEncoding\\(932\\).GetString\\($bytes\\))"
+    ]
+  }
+}

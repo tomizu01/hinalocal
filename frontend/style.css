@@ -1,0 +1,163 @@
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+  background: #0e1116;
+  color: #e6e8eb;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px;
+  gap: 12px;
+}
+
+.character {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.character img {
+  max-width: 100%;
+  max-height: 50vh;
+  object-fit: contain;
+  border-radius: 12px;
+  background: #1a1f29;
+}
+
+.bubble {
+  flex: 1 1 auto;
+  background: #1a1f29;
+  border: 1px solid #2a3140;
+  border-radius: 12px;
+  padding: 16px;
+  overflow-y: auto;
+  min-height: 80px;
+  font-size: 32px;
+  line-height: 1.6;
+}
+
+.bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.input-area {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#player-form {
+  display: flex;
+  gap: 8px;
+}
+
+#player-input {
+  flex: 1 1 auto;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #2a3140;
+  background: #0e1116;
+  color: #e6e8eb;
+  font-size: 14px;
+}
+
+#player-input:focus {
+  outline: none;
+  border-color: #5aa9ff;
+}
+
+button {
+  padding: 10px 14px;
+  border-radius: 8px;
+  border: 1px solid #2a3140;
+  background: #1a1f29;
+  color: #e6e8eb;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #232a37;
+}
+
+button[aria-pressed="true"] {
+  background: #2e6dd2;
+  border-color: #2e6dd2;
+}
+
+.mic-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.status {
+  font-size: 13px;
+  color: #9aa3af;
+}
+
+.last-player {
+  margin: 0;
+  padding: 8px 12px;
+  background: #11161e;
+  border: 1px solid #2a3140;
+  border-radius: 8px;
+  color: #cdd3dc;
+  font-size: 20px;
+  min-height: 1.4em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.last-player:empty {
+  display: none;
+}
+
+.start-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 17, 22, 0.92);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 16px;
+  z-index: 10;
+}
+
+.start-overlay button {
+  font-size: 24px;
+  padding: 16px 36px;
+  background: #2e6dd2;
+  border-color: #2e6dd2;
+  color: #fff;
+}
+
+.start-overlay button:hover {
+  background: #3b7ee0;
+}
+
+.start-hint {
+  text-align: center;
+  color: #9aa3af;
+  font-size: 13px;
+  margin: 0;
+}
+
+.start-overlay.hidden {
+  display: none;
+}
