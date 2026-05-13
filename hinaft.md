@@ -26,9 +26,9 @@
 
 - Windows 11
 - スピーカーとマイクがあること（エコー対策のためヘッドセット推奨）
-- フリーソフト **ShareX** がインストールされている。プレイ中のゲーム画面を定期的にキャプチャして、所定フォルダに**固定ファイル名**で保存する
 - ブラウザは Google Chrome Desktop
-- ゲームは特定タイトルに依存しない（ShareX でキャプチャ可能なものであれば何でも）
+- ゲームは特定タイトルに依存しない（Windows 上で表示されるウィンドウであれば何でも）
+- 画面キャプチャは外部ソフト不要。Python 側で `mss` + `pygetwindow` を用いて、対象ウィンドウを直接取得する
 
 # 技術スタック
 
@@ -67,8 +67,7 @@ hinaft/
 │       ├── stand.png        # キャラ立ち絵（APNG）
 │       └── talk.png         # キャラ会話絵（APNG）
 ├── captures/
-│   ├── (ShareX保存先：固定ファイル名で上書き保存)
-│   └── processing/          # rename後の作業用フォルダ
+│   └── processing/          # キャプチャ画像（加工後JPG）の保存フォルダ
 └── setup.ps1                # 初期設定スクリプト（PowerShell用、venv作成 + pip install）
 ```
 
@@ -77,17 +76,20 @@ hinaft/
 ## backend/config.yaml
 - Gemini APIキー
 - 使用モデル名（`gemini-3.1-pro-preview` / `gemini-3-flash-preview`）と起動時デフォルト
-- ShareX キャプチャ保存パス（固定ファイル名のフルパス）
-- rename 作業フォルダのパス
-- rename 失敗時のリトライ間隔・上限回数
-- キャプチャ画像のクリップ座標（左上 x1, y1 / 右下 x2, y2）
-- リサイズ後の解像度（横幅 px。縦は成り行き）
+- 対象ウィンドウタイトル（部分一致、`capture.window_title`）
+- 加工後画像の保存フォルダ（`capture.processing_dir`）
+- キャプチャ画像のクリップ座標（ウィンドウ左上原点。すべて0なら無効）
+- リサイズ後の解像度（横幅 px。0なら リサイズなし）
 - 会話履歴の取得件数（既定 30件）
 - メインループ間隔（既定 10秒）
 - DBファイルパス
 - プロンプトファイルパス
   - `prompts.character_path` … キャラ設定（常時ロード）
   - `prompts.task_path` … active な実況応援プロンプト（タイトル切り替え時はここを書き換える）
+
+### 起動時オプション
+- `--window <タイトル部分一致>` … `capture.window_title` を実行時に上書き
+- `--cheer <ファイル名>` … 実況応援プロンプトファイルを `prompts/` 配下から指定して上書き（拡張子省略可）
 
 ## frontend/config.js
 - ElevenLabs APIキー
@@ -109,12 +111,12 @@ hinaft/
 FastAPI 起動時に asyncio のバックグラウンドタスクとして以下のループを起動する
 （API リクエスト処理をブロックしないため、必ず非同期で実装する）。
 
-1. ShareX が保存したキャプチャファイル（固定ファイル名）の存在をチェック
-2. 存在しない → 一定秒数待ってループ先頭へ
-3. 存在する → ファイルを `captures/processing/` 配下にユニークな名前で **rename**
-   - rename が失敗した場合（ShareX が書き込み中など）は数秒待ってリトライ
-   - リトライ上限（例：5回）を超えたら警告ログを出してループ先頭へ
-4. rename 成功したファイルをクリップ・リサイズして別名で保存。元画像は削除
+1. `pygetwindow` で `capture.window_title` の部分一致するウィンドウを探す
+   - 最小化されていない、サイズが正のものを採用
+   - 見つからなければ **警告ログを出してこのループをスキップ**（次の interval まで待つ）
+2. `mss` でそのウィンドウ領域をスクリーンショット → PIL.Image に変換
+3. `image.clip` で追加クリップ（ウィンドウ左上原点）→ `image.resize_width` でリサイズ
+4. `captures/processing/<unique>.jpg` として JPEG 保存（生PNGは保持しない）
 5. DBから過去の会話履歴を直近30件取得
 6. プロンプト構築：
    - キャラ設定プロンプト（`character.md`）
@@ -187,15 +189,21 @@ FastAPI 起動時に asyncio のバックグラウンドタスクとして以下
 - 稼働PC側で実施：
   1. ZIP展開
   2. `setup.ps1` を実行（venv 作成 + `pip install -r requirements.txt`）
-  3. ShareX のキャプチャ保存先を `hinaft/captures/` に設定
-  4. ShareX のキャプチャ周期と保存ファイル名を設定（固定ファイル名）
-  5. `config.yaml` の `prompts.task_path` を、プレイするタイトル用のプロンプトファイルに設定
-  6. uvicorn 起動 → ブラウザで `http://localhost:8000` を開く
+  3. `config.yaml` の `capture.window_title` を、プレイするゲームウィンドウのタイトル部分一致文字列に設定
+  4. `config.yaml` の `prompts.task_path` を、プレイするタイトル用のプロンプトファイルに設定
+  5. uvicorn 起動 → ブラウザで `http://localhost:8000` を開く
 
 ## ゲームタイトルを切り替えるとき
 1. `backend/prompts/` 配下に該当タイトル用の `.md` を用意（既存ファイルを流用または新規作成）
 2. `config.yaml` の `prompts.task_path` を新しいファイルに書き換える
-3. uvicorn を再起動
+3. `config.yaml` の `capture.window_title` を新ゲームのウィンドウタイトルに合わせる
+4. uvicorn を再起動
+
+ワンショットで切り替えたい場合は、`config.yaml` を書き換えず以下のように起動時オプションで指定できる：
+
+```powershell
+python backend\main.py --window "Minecraft" --cheer minecraft
+```
 
 ## 開発環境について
 開発PCとテストPC（実稼働PC）は分かれている。
@@ -210,7 +218,7 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinaft/` 1�
 | Geminiモデル | `gemini-3.1-pro-preview`,`gemini-3-flash-preview` |
 | Pythonバージョン | 3.13 |
 | ElevenLabsプラン | Creator で開始、不足時 Pro へ |
-| キャプチャ受け渡し | 固定ファイル名 → rename 移動（失敗時リトライ） |
+| キャプチャ方式 | Python ネイティブ（`mss` + `pygetwindow`、ウィンドウタイトル指定）。加工後JPGのみ保存 |
 | テキスト/音声同期 | 同時開始のみ、末尾ズレ許容（7文字/s 固定） |
 | 再生済フラグ | 取得時に即立てる（取りこぼし許容） |
 | 画像添付 | 最新キャプチャ1枚のみ |

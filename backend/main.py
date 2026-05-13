@@ -11,6 +11,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import mss
+import pygetwindow as gw
 import yaml
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -44,6 +46,10 @@ def load_config() -> dict[str, Any]:
             )
         cfg["prompts"]["cheer_path"] = str(override_path)
         logger.info("cheerプロンプトを上書き: %s", override_path)
+    window_override = os.environ.get("HINAFT_WINDOW_TITLE")
+    if window_override:
+        cfg["capture"]["window_title"] = window_override
+        logger.info("ウィンドウタイトルを上書き: %s", window_override)
     return cfg
 
 
@@ -141,32 +147,56 @@ def history_to_text(rows: list[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
-def clip_and_resize(src: Path, dst: Path, clip: dict[str, int], resize_width: int) -> None:
-    with Image.open(src) as im:
-        im = im.convert("RGB")
-        cropped = im.crop((clip["x1"], clip["y1"], clip["x2"], clip["y2"]))
-        if resize_width and cropped.width != resize_width:
-            ratio = resize_width / cropped.width
-            new_size = (resize_width, int(cropped.height * ratio))
-            cropped = cropped.resize(new_size, Image.LANCZOS)
-        cropped.save(dst, format="JPEG", quality=85)
+def find_window_rect(title_substring: str) -> tuple[int, int, int, int] | None:
+    """タイトル部分一致でウィンドウを探し、(left, top, width, height) を返す。見つからなければ None。"""
+    try:
+        wins = gw.getWindowsWithTitle(title_substring)
+    except Exception:
+        logger.exception("getWindowsWithTitle 失敗 (title=%s)", title_substring)
+        return None
+    for w in wins:
+        try:
+            if getattr(w, "isMinimized", False):
+                continue
+            if w.width <= 0 or w.height <= 0:
+                continue
+            return (w.left, w.top, w.width, w.height)
+        except Exception:
+            continue
+    return None
+
+
+def capture_window(title_substring: str) -> Image.Image | None:
+    """対象ウィンドウ領域を mss で取得し PIL.Image を返す。未検出なら None。"""
+    rect = find_window_rect(title_substring)
+    if rect is None:
+        return None
+    left, top, width, height = rect
+    with mss.mss() as sct:
+        bbox = {"left": left, "top": top, "width": width, "height": height}
+        shot = sct.grab(bbox)
+    return Image.frombytes("RGB", shot.size, shot.rgb)
+
+
+def process_and_save(
+    image: Image.Image, dst: Path, clip: dict[str, int], resize_width: int
+) -> None:
+    img = image.convert("RGB")
+    x1, y1, x2, y2 = clip["x1"], clip["y1"], clip["x2"], clip["y2"]
+    if not (x1 == 0 and y1 == 0 and x2 == 0 and y2 == 0):
+        x2 = min(x2, img.width)
+        y2 = min(y2, img.height)
+        img = img.crop((x1, y1, x2, y2))
+    if resize_width and img.width != resize_width:
+        ratio = resize_width / img.width
+        new_size = (resize_width, int(img.height * ratio))
+        img = img.resize(new_size, Image.LANCZOS)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    img.save(dst, format="JPEG", quality=85)
 
 
 def read_prompt(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
-
-
-async def rename_with_retry(src: Path, dst: Path, interval: float, max_retries: int) -> bool:
-    for attempt in range(1, max_retries + 1):
-        try:
-            src.rename(dst)
-            return True
-        except (PermissionError, OSError) as e:
-            if attempt >= max_retries:
-                logger.warning("rename失敗（上限到達） %s -> %s : %s", src, dst, e)
-                return False
-            await asyncio.sleep(interval)
-    return False
 
 
 def build_gemini_client(api_key: str) -> genai.Client:
@@ -186,7 +216,7 @@ def call_gemini(
     user_text = (
         "これまでの会話履歴:\n"
         f"{history_block}\n\n"
-        "添付の画像は現在のZwift画面のキャプチャです。"
+        "添付の画像は現在のゲーム画面のキャプチャです。"
         "今までの会話履歴に自然につながる形で次に話す一言を出力してください。"
         "画像の内容も踏まえて、発話してください。"
         "出力は応援メッセージ本文のみで、説明や注釈は付けないでください。"
@@ -213,12 +243,10 @@ def call_gemini(
 async def main_loop(app: FastAPI) -> None:
     cfg = app.state.config
     db_path = cfg["database"]["path"]
-    source_path = Path(cfg["capture"]["source_path"])
+    window_title = cfg["capture"]["window_title"]
     processing_dir = Path(cfg["capture"]["processing_dir"])
     processing_dir.mkdir(parents=True, exist_ok=True)
     interval = cfg["loop"]["interval_seconds"]
-    retry_interval = cfg["capture"]["rename_retry_interval"]
-    retry_max = cfg["capture"]["rename_retry_max"]
     history_count = cfg["history"]["recent_count"]
     clip = cfg["image"]["clip"]
     resize_width = cfg["image"]["resize_width"]
@@ -227,38 +255,36 @@ async def main_loop(app: FastAPI) -> None:
     cheer_prompt = read_prompt(cfg["prompts"]["cheer_path"])
     client: genai.Client = app.state.gemini_client
 
-    logger.info("メインループ開始: source=%s interval=%ss", source_path, interval)
+    logger.info(
+        "メインループ開始: window_title=%r interval=%ss", window_title, interval
+    )
 
     while True:
         try:
-            exists = source_path.exists()
-            logger.info("check source=%s exists=%s", source_path, exists)
-            if not exists:
+            try:
+                captured = await asyncio.to_thread(capture_window, window_title)
+            except Exception:
+                logger.exception("ウィンドウキャプチャで例外")
+                await asyncio.sleep(interval)
+                continue
+            if captured is None:
+                logger.warning(
+                    "対象ウィンドウが見つかりません (title=%r) — このループをスキップ",
+                    window_title,
+                )
                 await asyncio.sleep(interval)
                 continue
 
-            unique_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}{source_path.suffix}"
-            renamed_raw = processing_dir / unique_name
-            ok = await rename_with_retry(source_path, renamed_raw, retry_interval, retry_max)
-            if not ok:
-                await asyncio.sleep(interval)
-                continue
-
-            processed = renamed_raw.with_suffix(".jpg")
+            unique_name = f"{int(time.time())}_{uuid.uuid4().hex[:8]}.jpg"
+            processed = processing_dir / unique_name
             try:
                 await asyncio.to_thread(
-                    clip_and_resize, renamed_raw, processed, clip, resize_width
+                    process_and_save, captured, processed, clip, resize_width
                 )
             except Exception:
-                logger.exception("画像加工失敗 %s", renamed_raw)
+                logger.exception("画像加工失敗")
                 await asyncio.sleep(interval)
                 continue
-            finally:
-                try:
-                    if renamed_raw.exists() and renamed_raw != processed:
-                        renamed_raw.unlink()
-                except OSError as e:
-                    logger.warning("元画像削除失敗 %s : %s", renamed_raw, e)
 
             history_rows = await asyncio.to_thread(
                 fetch_recent_history, db_path, history_count
@@ -401,9 +427,15 @@ if __name__ == "__main__":
         "--cheer",
         help="cheer.mdの代わりに使うファイル名 (backend/prompts/ 配下)。拡張子省略可",
     )
+    parser.add_argument(
+        "--window",
+        help="config.yaml の capture.window_title を上書きするウィンドウタイトル（部分一致）",
+    )
     args = parser.parse_args()
     if args.cheer:
         os.environ["HINAFT_CHEER_FILE"] = args.cheer
+    if args.window:
+        os.environ["HINAFT_WINDOW_TITLE"] = args.window
 
     import uvicorn
 

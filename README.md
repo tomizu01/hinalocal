@@ -8,12 +8,12 @@
 # 必要環境・ソフト
 
 - Windows 11 64bit
-- 画面自動キャプチャソフト（固定ファイル名で自動上書き保存できるもの。例：ShareX）
 - Chrome Desktop ブラウザ
 - マイク・ヘッドホン推奨
 - Python 3.13
 
-特定のゲームタイトルへの依存はありません。ShareX でキャプチャ可能なゲームであれば動作します。
+特定のゲームタイトルへの依存はありません。Windows 上でウィンドウとして表示されるゲームであれば動作します
+（画面キャプチャは Python の `mss` + `pygetwindow` で行うため、別途キャプチャソフトのインストールは不要）。
 
 # 事前準備
 
@@ -25,7 +25,6 @@
 必要ソフトをインストールする
 - Python 3.13
 - Chrome Desktop
-- 画面自動キャプチャソフト（ShareX 等）
 
 ソースを展開する
 
@@ -37,9 +36,8 @@
 下記設定ファイルを書き換える
 - `backend\config.yaml`
   - Gemini API Key の埋め込み
-  - キャプチャソフトが書き出す画像のパス・ファイル名の設定
-  - 各種パスの書き換え
-  - キャプチャした画像からゲーム画面を切り出す範囲の設定
+  - `capture.window_title` にプレイするゲームのウィンドウタイトル（部分一致）を指定
+  - `image.clip` でウィンドウから切り出す範囲を指定（任意）
   - `prompts.task_path` にプレイするタイトル用のプロンプトファイルを指定
 - `frontend\config.js`
   - ElevenLabs の API キー・ボイスID の埋め込み
@@ -56,12 +54,10 @@ Windows PowerShell を起動し、ソースを展開したディレクトリに�
 - スクリプトが実行できない場合は下記コマンドを実行する
   - `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`
 
-スクリーンキャプチャーソフトを起動
-- `config.yaml` で指定した画像パスにバックグラウンドで一定時間おきに自動画像保存（上書き）する設定で実行しておく
-
 Python を実行
 - `.\backend\venv\Scripts\Activate.ps1`
 - `python backend\main.py`
+  - ワンショットで対象を変えたい場合は `python backend\main.py --window "Minecraft" --cheer minecraft` のように起動時オプションでも上書き可能
 
 ブラウザでアクセス
 - `http://localhost:8000`
@@ -70,8 +66,11 @@ Python を実行
 
 1. `backend\prompts\` 配下に該当タイトル用の `.md` を用意（既存ファイルを流用または新規作成）
 2. `backend\config.yaml` の `prompts.task_path` を新しいファイルに書き換える
-3. キャプチャ範囲（`image.clip`）も必要に応じて調整する
-4. uvicorn を再起動
+3. `backend\config.yaml` の `capture.window_title` を新ゲームのウィンドウタイトルに合わせる
+4. キャプチャ範囲（`image.clip`）も必要に応じて調整する
+5. uvicorn を再起動
+
+（その都度切り替える場合は `--window` / `--cheer` 起動オプションでも可）
 
 ---
 

@@ -12,23 +12,22 @@ gemini:
 
 # キャプチャ設定
 capture:
-  # ShareXが固定ファイル名で書き出す画像のフルパス
-  source_path: "C:/hinalive/captures/capture.png"
-  # rename後の作業フォルダ
+  # 対象ゲームウィンドウのタイトル（部分一致）。
+  # 起動時オプション --window で上書き可能。
+  window_title: "Minecraft"
+  # 加工後画像の保存フォルダ
   processing_dir: "C:/hinalive/captures/processing"
-  # rename失敗時のリトライ間隔（秒）と上限回数
-  rename_retry_interval: 2
-  rename_retry_max: 5
 
-# 画像加工設定（ゲーム画面のクリップ）
+# 画像加工設定（キャプチャしたウィンドウ画像に対する追加クリップ）
 image:
-  # クリップ座標（左上 x1, y1 / 右下 x2, y2）
+  # クリップ座標（ウィンドウ左上を原点とする 左上 x1, y1 / 右下 x2, y2）。
+  # すべて0なら クリップなし（ウィンドウ全体を使用）。
   clip:
     x1: 0
     y1: 0
-    x2: 1920
-    y2: 1080
-  # リサイズ後の横幅（px）。縦は成り行き
+    x2: 0
+    y2: 0
+  # リサイズ後の横幅（px）。縦は成り行き。0なら リサイズなし。
   resize_width: 768
 
 # 会話履歴
@@ -38,7 +37,7 @@ history:
 
 # メインループ
 loop:
-  # キャプチャ存在チェックの待機間隔（秒）
+  # キャプチャ実行の間隔（秒）
   interval_seconds: 10
 
 # DB

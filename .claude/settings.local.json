@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "PowerShell(Get-ChildItem -Path C:\\\\hinalive\\\\backend -Force | Where-Object { $_.Name -notin 'venv','__pycache__' } | Format-Table Mode, LastWriteTime, Length, Name -AutoSize | Out-String)",
-      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\('C:\\\\hinalive\\\\setup.ps1'\\); $bytes[0..15] | ForEach-Object { $_.ToString\\('x2'\\) } | Out-String; Write-Output '---decoded---'; [System.Text.Encoding]::GetEncoding\\(932\\).GetString\\($bytes\\))"
+      "PowerShell($bytes = [System.IO.File]::ReadAllBytes\\('C:\\\\hinalive\\\\setup.ps1'\\); $bytes[0..15] | ForEach-Object { $_.ToString\\('x2'\\) } | Out-String; Write-Output '---decoded---'; [System.Text.Encoding]::GetEncoding\\(932\\).GetString\\($bytes\\))",
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -m pip install mss==9.0.2 pygetwindow==0.0.9 2>&1 | Out-String)",
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import ast; ast.parse\\(open\\('C:/hinalive/backend/main.py','r',encoding='utf-8'\\).read\\(\\)\\); print\\('OK: syntax'\\)\")",
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; print\\('imports ok'\\); print\\('has capture_window:', hasattr\\(main,'capture_window'\\)\\); print\\('has find_window_rect:', hasattr\\(main,'find_window_rect'\\)\\); print\\('has process_and_save:', hasattr\\(main,'process_and_save'\\)\\); print\\('no rename_with_retry:', not hasattr\\(main,'rename_with_retry'\\)\\)\")",
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe C:\\\\hinalive\\\\backend\\\\_smoke_capture.py)"
     ]
   }
 }
