@@ -47,7 +47,7 @@
 # フォルダ構成
 
 ```
-hinaft/
+hinalive/
 ├── backend/
 │   ├── main.py
 │   ├── config.yaml          # クリップ座標、Gemini APIキー、モデル名、active プロンプト指定 等
@@ -139,11 +139,12 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 2. `mss` でそのウィンドウ領域をスクリーンショット → PIL.Image に変換
 3. `image.clip` で追加クリップ（ウィンドウ左上原点）→ `image.resize_width` でリサイズ
 4. `captures/processing/<unique>.jpg` として JPEG 保存（生PNGは保持しない）
-5. DBから過去の会話履歴を**現キャラの**直近30件取得
+5. DBから現キャラの直近30件の会話履歴、および直近10件の中期記憶を取得（どちらも古い順に整列）
 6. プロンプト構築：
    - キャラ設定プロンプト（`character.md`）
    - 実況応援プロンプト（`config.yaml` で指定された active な game プロンプト）
-   - 会話履歴（テキストのみ、`AI: ～` / `プレイヤー: ～` の繰り返し形式）
+   - 「直近の会話履歴（古い順）」：`AI: ～` / `プレイヤー: ～` の繰り返し形式
+   - 「ここまでのプレイの概要（古い順）」：中期記憶の要約を段落区切りで列挙
    - 最新キャプチャ画像1枚を添付（履歴に画像は含めない）
 7. Gemini API に投げて、実況・応援メッセージを生成
 8. 生成されたメッセージをDBに保存（`character_id`=現キャラ、`speaker="ai"`、未再生フラグ=未再生）
@@ -236,7 +237,7 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 # 配布・運用
 
 ## ZIPでの配布
-- `hinaft/` フォルダ全体を ZIP にまとめて転送
+- `hinalive/` フォルダ全体を ZIP にまとめて転送
 - API キー類は `.env` ではなく `config.yaml` / `config.js` で持つ
   （自分専用のため簡略化）
 - 稼働PC側で実施：
@@ -260,7 +261,7 @@ python backend\main.py --window "Minecraft" --cheer minecraft
 
 ## 開発環境について
 開発PCとテストPC（実稼働PC）は分かれている。
-ZIPでまとめて転送できるよう、必要なファイルを `hinaft/` 1フォルダに収める。
+ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1フォルダに収める。
 
 # 確定事項サマリ
 

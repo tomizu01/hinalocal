@@ -1,5 +1,5 @@
 (() => {
-  const cfg = window.HINAFT_CONFIG;
+  const cfg = window.HINALIVE_CONFIG;
 
   const bubbleEl = document.getElementById("bubble-text");
   const playerForm = document.getElementById("player-form");

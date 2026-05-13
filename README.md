@@ -1,9 +1,9 @@
-# Hinaft
+# Hinalive
 
 任意のPCゲームをプレイ中に、キャラが画面の状況を**実況**したり**応援**したりしてくれる
 汎用ゲーム実況支援AIコンパニオンです（自宅・個人利用向け）。
 
-詳細仕様は `hinaft.md` を参照してください。
+詳細仕様は `hinalive.md` を参照してください。
 
 # 必要環境・ソフト
 
@@ -81,16 +81,16 @@ Python を実行
 
 # 注意事項
 
-※ Hinaft は個人開発による非公式ツールです。
+※ Hinalive は個人開発による非公式ツールです。
 ご利用は自己責任でお願いいたします。
 
 本システムの利用により発生した問題について、開発者は責任を負いません。
 また、本ソフトが対応する各ゲームタイトルの提供元・運営とは一切関係ありません。
 不具合や質問について、各ゲームタイトルの提供元へのお問い合わせは行わないようお願いいたします。
 
-Hinaft is an unofficial personal project.
+Hinalive is an unofficial personal project.
 Use at your own risk.
 
 The developer is not responsible for any issues caused by the use of this system.
-Hinaft is not affiliated with the publishers of any game it is used with.
+Hinalive is not affiliated with the publishers of any game it is used with.
 Please do not contact those publishers regarding any issues, questions, or support related to this system.

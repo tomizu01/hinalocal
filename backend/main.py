@@ -27,7 +27,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("hinaft")
+logger = logging.getLogger("hinalive")
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
@@ -46,7 +46,7 @@ def validate_character_id(cid: Any) -> str:
 def load_config() -> dict[str, Any]:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
-    cheer_override = os.environ.get("HINAFT_CHEER_FILE")
+    cheer_override = os.environ.get("HINALIVE_CHEER_FILE")
     if cheer_override:
         prompts_dir = Path(cfg["prompts"]["cheer_path"]).parent
         override_path = prompts_dir / cheer_override
@@ -58,7 +58,7 @@ def load_config() -> dict[str, Any]:
             )
         cfg["prompts"]["cheer_path"] = str(override_path)
         logger.info("cheerプロンプトを上書き: %s", override_path)
-    window_override = os.environ.get("HINAFT_WINDOW_TITLE")
+    window_override = os.environ.get("HINALIVE_WINDOW_TITLE")
     if window_override:
         cfg["capture"]["window_title"] = window_override
         logger.info("ウィンドウタイトルを上書き: %s", window_override)
@@ -191,6 +191,19 @@ def insert_mid_term_memory(db_path: str, character_id: str, summary: str) -> int
         return cur.lastrowid
 
 
+def fetch_recent_mid_term_memories(
+    db_path: str, character_id: str, limit: int
+) -> list[sqlite3.Row]:
+    """直近の中期記憶を古い順で返す。"""
+    with db_connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, summary, created_at FROM mid_term_memories "
+            "WHERE character_id = ? ORDER BY id DESC LIMIT ?",
+            (character_id, limit),
+        ).fetchall()
+    return list(reversed(rows))
+
+
 async def wait_for_new_player_message(
     db_path: str, character_id: str, total_seconds: float, check_interval: float
 ) -> bool:
@@ -230,6 +243,11 @@ def history_to_text(rows: list[sqlite3.Row]) -> str:
         prefix = "AI" if r["speaker"] == "ai" else "プレイヤー"
         lines.append(f"{prefix}: {r['content']}")
     return "\n".join(lines)
+
+
+def mid_term_to_text(rows: list[sqlite3.Row]) -> str:
+    """中期記憶を段落区切りのテキストに整形（古い順）。"""
+    return "\n\n".join(r["summary"] for r in rows)
 
 
 def find_window_rect(title_substring: str) -> tuple[int, int, int, int] | None:
@@ -319,13 +337,17 @@ def call_gemini(
     character_prompt: str,
     cheer_prompt: str,
     history_text: str,
+    mid_term_text: str,
     image_path: Path,
 ) -> str:
     system_instruction = f"{character_prompt}\n\n---\n\n{cheer_prompt}"
     history_block = history_text if history_text else "（まだ会話履歴はありません）"
+    mid_term_block = mid_term_text if mid_term_text else "（まだプレイ概要はありません）"
     user_text = (
-        "これまでの会話履歴:\n"
+        "直近の会話履歴（古い順）：\n"
         f"{history_block}\n\n"
+        "ここまでのプレイの概要（古い順）：\n"
+        f"{mid_term_block}\n\n"
         "添付の画像は現在のゲーム画面のキャプチャです。"
         "今までの会話履歴に自然につながる形で次に話す一言を出力してください。"
         "画像の内容も踏まえて、発話してください。"
@@ -405,6 +427,11 @@ async def main_loop(app: FastAPI) -> None:
             )
             history_text = history_to_text(history_rows)
 
+            mid_term_rows = await asyncio.to_thread(
+                fetch_recent_mid_term_memories, db_path, character_id, 10
+            )
+            mid_term_text = mid_term_to_text(mid_term_rows)
+
             tier = app.state.model_tier
             model = app.state.model_names[tier]
             try:
@@ -415,6 +442,7 @@ async def main_loop(app: FastAPI) -> None:
                     character_prompt,
                     cheer_prompt,
                     history_text,
+                    mid_term_text,
                     processed,
                 )
             except Exception:
@@ -618,7 +646,7 @@ app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="fronte
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="hinaft backend")
+    parser = argparse.ArgumentParser(description="hinalive backend")
     parser.add_argument(
         "--cheer",
         help="cheer.mdの代わりに使うファイル名 (backend/prompts/ 配下)。拡張子省略可",
@@ -629,9 +657,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     if args.cheer:
-        os.environ["HINAFT_CHEER_FILE"] = args.cheer
+        os.environ["HINALIVE_CHEER_FILE"] = args.cheer
     if args.window:
-        os.environ["HINAFT_WINDOW_TITLE"] = args.window
+        os.environ["HINALIVE_WINDOW_TITLE"] = args.window
 
     import uvicorn
 

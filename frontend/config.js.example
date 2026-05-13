@@ -3,7 +3,7 @@
 // 実体の config.js は .gitignore で除外されています。
 
 // ElevenLabs フロント側設定（自分専用ソフトのため直書き）
-window.HINAFT_CONFIG = {
+window.HINALIVE_CONFIG = {
   elevenlabs: {
     apiKey: "YOUR_ELEVENLABS_API_KEY_HERE",
     voiceId: "YOUR_VOICE_ID_HERE",
