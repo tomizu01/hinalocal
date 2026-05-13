@@ -86,6 +86,16 @@ hinaft/
 - プロンプトファイルパス
   - `prompts.character_path` … キャラ設定（常時ロード）
   - `prompts.task_path` … active な実況応援プロンプト（タイトル切り替え時はここを書き換える）
+  - `prompts.summary_path` … 中期記憶要約用テンプレート（`{target_chars}` `{history_text}` `{game_name}` を埋め込み）
+- キャラクター設定
+  - `character.current_id` … 現在のキャラクターID。会話履歴・各種記憶テーブルに紐づくキー。**A-Za-z 1〜16文字** の制約（起動時に検証、違反したら起動失敗）
+- ゲーム設定
+  - `game.name` … 現在プレイ中のゲームの表示名。要約プロンプト等に埋め込まれる
+- 記憶レイヤー設定
+  - `memory.mid_term.window_size` … 中期記憶生成時に取得する直近会話件数（既定 30）
+  - `memory.mid_term.target_chars` … 要約の目標文字数（既定 100）
+  - `memory.mid_term.batch_threshold` … 前回処理時から何件の会話が増えたらバッチを走らせるか（既定 20）
+  - `memory.mid_term.interval_seconds` … バッチループの待機間隔秒数（既定 10）
 
 ### 起動時オプション
 - `--window <タイトル部分一致>` … `capture.window_title` を実行時に上書き
@@ -104,12 +114,24 @@ hinaft/
 - `backend/prompts/<game>.md` … タイトル別の実況・応援指示。「画面から何を読み取るか」「どんな声かけをするか」「禁止事項」などを記述する。
   - 例：`zwift.md`, `minecraft.md`, など必要に応じて追加
   - active なものを `config.yaml` で1つ指定する
+- `backend/prompts/summary.md` … 中期記憶要約バッチで使うテンプレート。Python の `str.format()` で以下の名前付きプレースホルダを埋め込んで使う：
+  - `{game_name}` … `config.yaml` の `game.name`
+  - `{target_chars}` … `config.yaml` の `memory.mid_term.target_chars`
+  - `{history_text}` … 直近会話履歴（`AI: ～` / `プレイヤー: ～` 形式）
+  - テンプレート内に意図しない `{` `}` を書きたい場合は `{{` `}}` でエスケープする
 
 # バックエンド仕様
 
+バックエンドは FastAPI 起動時に **2本の asyncio バックグラウンドタスク** を生やす
+（API リクエスト処理をブロックしないため、必ず非同期で実装する）：
+
+1. **メインループ**：キャプチャ → 応援メッセージ生成
+2. **中期記憶ループ**：会話履歴の要約バッチ（独立した間隔で動く）
+
+DB操作（会話履歴・各種記憶テーブル）はすべて `character.current_id` を WHERE 条件に含み、
+現在のキャラクターに紐づくレコードだけを読み書きする。
+
 ## メインループ処理
-FastAPI 起動時に asyncio のバックグラウンドタスクとして以下のループを起動する
-（API リクエスト処理をブロックしないため、必ず非同期で実装する）。
 
 1. `pygetwindow` で `capture.window_title` の部分一致するウィンドウを探す
    - 最小化されていない、サイズが正のものを採用
@@ -117,15 +139,32 @@ FastAPI 起動時に asyncio のバックグラウンドタスクとして以下
 2. `mss` でそのウィンドウ領域をスクリーンショット → PIL.Image に変換
 3. `image.clip` で追加クリップ（ウィンドウ左上原点）→ `image.resize_width` でリサイズ
 4. `captures/processing/<unique>.jpg` として JPEG 保存（生PNGは保持しない）
-5. DBから過去の会話履歴を直近30件取得
+5. DBから過去の会話履歴を**現キャラの**直近30件取得
 6. プロンプト構築：
    - キャラ設定プロンプト（`character.md`）
    - 実況応援プロンプト（`config.yaml` で指定された active な game プロンプト）
    - 会話履歴（テキストのみ、`AI: ～` / `プレイヤー: ～` の繰り返し形式）
    - 最新キャプチャ画像1枚を添付（履歴に画像は含めない）
 7. Gemini API に投げて、実況・応援メッセージを生成
-8. 生成されたメッセージをDBに保存（speaker="ai"、未再生フラグ=未再生）
+8. 生成されたメッセージをDBに保存（`character_id`=現キャラ、`speaker="ai"`、未再生フラグ=未再生）
 9. 5秒おきに次のユーザーメッセージを待つ。次のメッセージが来るか、所定秒数繰り返して、メッセージが来なければループ先頭へ戻る
+
+## 中期記憶バッチループ
+
+起動時に `last_seen = MAX(messages.id WHERE character_id=current)` で初期化。
+（既存履歴の即時要約を避けるため）。
+要約モデルは **常に flash 固定**（コスト・遅延優先）。
+
+1. 現キャラの最新 `messages.id` を取得し、`delta = latest - last_seen` を求める
+2. `delta < batch_threshold`（既定 20）ならスキップして手順4 へ
+3. `delta >= batch_threshold` の場合：
+   - 現キャラの直近 `window_size` 件（既定 30件）の会話履歴を取得
+   - `prompts/summary.md` テンプレートを `{target_chars}` `{history_text}` `{game_name}` で埋めてプロンプト化
+   - flash モデルで要約 → `mid_term_memories` テーブルに `(character_id, summary)` を追加
+   - `last_seen = latest` に更新
+4. `interval_seconds`（既定 10秒）待ってループ先頭へ戻る
+
+※ 中期記憶の **会話生成プロンプトへの注入は本フェーズの対象外**（保存のみ実装）
 
 ## API一覧
 
@@ -145,12 +184,26 @@ FastAPI 起動時に asyncio のバックグラウンドタスクとして以下
 
 ## DBスキーマ（SQLite3）
 
-`messages` テーブル
+### `messages` テーブル（会話履歴 = 短期記憶）
 - `id` INTEGER PRIMARY KEY AUTOINCREMENT
 - `speaker` TEXT NOT NULL  -- "ai" または "player"
 - `content` TEXT NOT NULL
 - `played` INTEGER NOT NULL DEFAULT 0  -- 0=未再生, 1=再生済
 - `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+- `character_id` TEXT  -- A-Za-z 1-16文字。起動時に既存 NULL 行は config の current_id で backfill
+- INDEX `idx_messages_char_id` (`character_id`, `id` DESC)
+
+### `mid_term_memories` テーブル（中期記憶 = 直近会話の要約）
+- `id` INTEGER PRIMARY KEY AUTOINCREMENT
+- `character_id` TEXT NOT NULL
+- `summary` TEXT NOT NULL  -- 要約本文（既定 100文字程度）
+- `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+- INDEX `idx_mid_term_char` (`character_id`, `id` DESC)
+
+### マイグレーション方針
+- 起動時 `init_db` で `PRAGMA table_info(messages)` を見て `character_id` カラムが無ければ `ALTER TABLE ADD COLUMN`
+- `character_id IS NULL` の行は `config.character.current_id` で `UPDATE`
+- 上記は冪等で、再起動を繰り返しても副作用なし
 
 # フロントエンド仕様
 
@@ -219,6 +272,9 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinaft/` 1�
 | Pythonバージョン | 3.13 |
 | ElevenLabsプラン | Creator で開始、不足時 Pro へ |
 | キャプチャ方式 | Python ネイティブ（`mss` + `pygetwindow`、ウィンドウタイトル指定）。加工後JPGのみ保存 |
+| キャラクター管理 | `character.current_id`（A-Za-z 1-16文字）で識別。会話履歴・記憶テーブルはこのIDで分離 |
+| 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（直近30件を100文字要約、20件溜まったら追加）。長期は未実装 |
+| 要約モデル | 中期記憶バッチは常に flash 固定 |
 | テキスト/音声同期 | 同時開始のみ、末尾ズレ許容（7文字/s 固定） |
 | 再生済フラグ | 取得時に即立てる（取りこぼし許容） |
 | 画像添付 | 最新キャプチャ1枚のみ |

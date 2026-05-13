@@ -50,3 +50,28 @@ prompts:
   character_path: "C:/hinalive/backend/prompts/character.md"
   # active なゲーム別 実況応援プロンプト。タイトル切り替え時はここを書き換える
   task_path: "C:/hinalive/backend/prompts/minecraft.md"
+  # 中期記憶生成用テンプレート。{target_chars} {history_text} {game_name} を埋め込む
+  summary_path: "C:/hinalive/backend/prompts/summary.md"
+
+# ゲーム
+game:
+  # 現在プレイ中のゲームの表示名（プロンプトに埋め込まれる）
+  name: "Minecraft"
+
+# キャラクター
+character:
+  # 現在のキャラクターID（A-Za-z、1-16文字）
+  # 会話履歴・各種記憶はこのIDに紐づく
+  current_id: "hina"
+
+# 記憶レイヤー
+memory:
+  mid_term:
+    # 要約対象の直近会話件数
+    window_size: 30
+    # 要約の目標文字数
+    target_chars: 100
+    # 前回処理時から何件の会話が追加されたらバッチを走らせるか
+    batch_threshold: 20
+    # バッチループの待機間隔（秒）
+    interval_seconds: 10

@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import logging
 import os
+import re
 import sqlite3
 import time
 import uuid
@@ -30,6 +31,17 @@ logger = logging.getLogger("hinaft")
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
+CHARACTER_ID_RE = re.compile(r"^[A-Za-z]{1,16}$")
+
+
+def validate_character_id(cid: Any) -> str:
+    """character_id を A-Za-z 1-16文字に制限。違反したら ValueError。"""
+    if not isinstance(cid, str) or not CHARACTER_ID_RE.match(cid):
+        raise ValueError(
+            f"character_id は A-Za-z 1-16文字である必要があります: {cid!r}"
+        )
+    return cid
+
 
 def load_config() -> dict[str, Any]:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
@@ -50,10 +62,17 @@ def load_config() -> dict[str, Any]:
     if window_override:
         cfg["capture"]["window_title"] = window_override
         logger.info("ウィンドウタイトルを上書き: %s", window_override)
+    # character_id 検証
+    validate_character_id(cfg["character"]["current_id"])
     return cfg
 
 
-def init_db(db_path: str) -> None:
+def _column_exists(conn: sqlite3.Connection, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(r[1] == column for r in rows)
+
+
+def init_db(db_path: str, default_character_id: str) -> None:
     Path(db_path).parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -67,6 +86,42 @@ def init_db(db_path: str) -> None:
             )
             """
         )
+        # messages に character_id カラムを追加（未追加時のみ）
+        if not _column_exists(conn, "messages", "character_id"):
+            conn.execute("ALTER TABLE messages ADD COLUMN character_id TEXT")
+            logger.info("messages.character_id カラムを追加しました")
+        # 未設定行を current_id で backfill
+        cur = conn.execute(
+            "UPDATE messages SET character_id = ? WHERE character_id IS NULL",
+            (default_character_id,),
+        )
+        if cur.rowcount > 0:
+            logger.info(
+                "messages.character_id を %d 行に backfill (= %s)",
+                cur.rowcount,
+                default_character_id,
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_messages_char_id "
+            "ON messages(character_id, id DESC)"
+        )
+
+        # 中期記憶テーブル
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mid_term_memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_mid_term_char "
+            "ON mid_term_memories(character_id, id DESC)"
+        )
+
         cur = conn.execute(
             "UPDATE messages SET played = 1 WHERE speaker = 'ai' AND played = 0"
         )
@@ -81,43 +136,71 @@ def db_connect(db_path: str) -> sqlite3.Connection:
     return conn
 
 
-def fetch_recent_history(db_path: str, limit: int) -> list[sqlite3.Row]:
+def fetch_recent_history(
+    db_path: str, character_id: str, limit: int
+) -> list[sqlite3.Row]:
     with db_connect(db_path) as conn:
         rows = conn.execute(
-            "SELECT speaker, content FROM messages ORDER BY id DESC LIMIT ?",
-            (limit,),
+            "SELECT speaker, content FROM messages "
+            "WHERE character_id = ? ORDER BY id DESC LIMIT ?",
+            (character_id, limit),
         ).fetchall()
     return list(reversed(rows))
 
 
-def insert_message(db_path: str, speaker: str, content: str, played: int = 0) -> int:
+def insert_message(
+    db_path: str, character_id: str, speaker: str, content: str, played: int = 0
+) -> int:
     with db_connect(db_path) as conn:
         cur = conn.execute(
-            "INSERT INTO messages (speaker, content, played) VALUES (?, ?, ?)",
-            (speaker, content, played),
+            "INSERT INTO messages (character_id, speaker, content, played) "
+            "VALUES (?, ?, ?, ?)",
+            (character_id, speaker, content, played),
         )
         conn.commit()
         return cur.lastrowid
 
 
-def fetch_latest_player_id(db_path: str) -> int:
+def fetch_latest_player_id(db_path: str, character_id: str) -> int:
     with db_connect(db_path) as conn:
         row = conn.execute(
-            "SELECT id FROM messages WHERE speaker = 'player' ORDER BY id DESC LIMIT 1"
+            "SELECT id FROM messages "
+            "WHERE character_id = ? AND speaker = 'player' "
+            "ORDER BY id DESC LIMIT 1",
+            (character_id,),
         ).fetchone()
     return row["id"] if row else 0
 
 
+def fetch_max_message_id(db_path: str, character_id: str) -> int:
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT MAX(id) AS max_id FROM messages WHERE character_id = ?",
+            (character_id,),
+        ).fetchone()
+    return row["max_id"] if row and row["max_id"] is not None else 0
+
+
+def insert_mid_term_memory(db_path: str, character_id: str, summary: str) -> int:
+    with db_connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO mid_term_memories (character_id, summary) VALUES (?, ?)",
+            (character_id, summary),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
 async def wait_for_new_player_message(
-    db_path: str, total_seconds: float, check_interval: float
+    db_path: str, character_id: str, total_seconds: float, check_interval: float
 ) -> bool:
     """5秒おきに新着プレイヤー発言を確認。新着があれば即True、タイムアウトでFalse。"""
-    baseline = await asyncio.to_thread(fetch_latest_player_id, db_path)
+    baseline = await asyncio.to_thread(fetch_latest_player_id, db_path, character_id)
     elapsed = 0.0
     while elapsed < total_seconds:
         await asyncio.sleep(check_interval)
         elapsed += check_interval
-        latest = await asyncio.to_thread(fetch_latest_player_id, db_path)
+        latest = await asyncio.to_thread(fetch_latest_player_id, db_path, character_id)
         if latest > baseline:
             logger.info(
                 "新着プレイヤー発言を検知 (id=%s)、待機を打ち切ってループ先頭へ", latest
@@ -126,11 +209,13 @@ async def wait_for_new_player_message(
     return False
 
 
-def fetch_next_unplayed_ai(db_path: str) -> sqlite3.Row | None:
+def fetch_next_unplayed_ai(db_path: str, character_id: str) -> sqlite3.Row | None:
     with db_connect(db_path) as conn:
         row = conn.execute(
             "SELECT id, speaker, content, created_at FROM messages "
-            "WHERE speaker = 'ai' AND played = 0 ORDER BY id ASC LIMIT 1"
+            "WHERE character_id = ? AND speaker = 'ai' AND played = 0 "
+            "ORDER BY id ASC LIMIT 1",
+            (character_id,),
         ).fetchone()
         if row is None:
             return None
@@ -203,6 +288,31 @@ def build_gemini_client(api_key: str) -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+def call_summarize(
+    client: genai.Client,
+    model: str,
+    template: str,
+    history_text: str,
+    target_chars: int,
+    game_name: str,
+) -> str:
+    user_text = template.format(
+        target_chars=target_chars,
+        history_text=history_text,
+        game_name=game_name,
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=[
+            genai_types.Content(
+                role="user",
+                parts=[genai_types.Part.from_text(text=user_text)],
+            )
+        ],
+    )
+    return (response.text or "").strip()
+
+
 def call_gemini(
     client: genai.Client,
     model: str,
@@ -243,6 +353,7 @@ def call_gemini(
 async def main_loop(app: FastAPI) -> None:
     cfg = app.state.config
     db_path = cfg["database"]["path"]
+    character_id = cfg["character"]["current_id"]
     window_title = cfg["capture"]["window_title"]
     processing_dir = Path(cfg["capture"]["processing_dir"])
     processing_dir.mkdir(parents=True, exist_ok=True)
@@ -256,7 +367,10 @@ async def main_loop(app: FastAPI) -> None:
     client: genai.Client = app.state.gemini_client
 
     logger.info(
-        "メインループ開始: window_title=%r interval=%ss", window_title, interval
+        "メインループ開始: character=%s window_title=%r interval=%ss",
+        character_id,
+        window_title,
+        interval,
     )
 
     while True:
@@ -287,7 +401,7 @@ async def main_loop(app: FastAPI) -> None:
                 continue
 
             history_rows = await asyncio.to_thread(
-                fetch_recent_history, db_path, history_count
+                fetch_recent_history, db_path, character_id, history_count
             )
             history_text = history_to_text(history_rows)
 
@@ -313,7 +427,9 @@ async def main_loop(app: FastAPI) -> None:
                 await asyncio.sleep(interval)
                 continue
 
-            await asyncio.to_thread(insert_message, db_path, "ai", message, 0)
+            await asyncio.to_thread(
+                insert_message, db_path, character_id, "ai", message, 0
+            )
             logger.info("AI発話を保存 (tier=%s): %s", tier, message[:40])
 
         except asyncio.CancelledError:
@@ -322,7 +438,80 @@ async def main_loop(app: FastAPI) -> None:
         except Exception:
             logger.exception("メインループで予期せぬ例外")
 
-        await wait_for_new_player_message(db_path, interval * 3, 5)
+        await wait_for_new_player_message(db_path, character_id, interval * 3, 5)
+
+
+async def mid_term_memory_loop(app: FastAPI) -> None:
+    """中期記憶バッチループ。前回処理時から batch_threshold 件以上の
+    新規会話が積まれていれば、直近 window_size 件を flash モデルで要約して
+    mid_term_memories に保存する。"""
+    cfg = app.state.config
+    db_path = cfg["database"]["path"]
+    character_id = cfg["character"]["current_id"]
+    mt_cfg = cfg["memory"]["mid_term"]
+    window_size = mt_cfg["window_size"]
+    target_chars = mt_cfg["target_chars"]
+    batch_threshold = mt_cfg["batch_threshold"]
+    interval = mt_cfg["interval_seconds"]
+    flash_model = cfg["gemini"]["flash_model"]
+    game_name = cfg["game"]["name"]
+    summary_template = read_prompt(cfg["prompts"]["summary_path"])
+    client: genai.Client = app.state.gemini_client
+
+    last_seen = await asyncio.to_thread(fetch_max_message_id, db_path, character_id)
+    logger.info(
+        "中期記憶ループ開始: character=%s game=%s last_seen=%d threshold=%d window=%d interval=%ss",
+        character_id,
+        game_name,
+        last_seen,
+        batch_threshold,
+        window_size,
+        interval,
+    )
+
+    while True:
+        try:
+            latest = await asyncio.to_thread(
+                fetch_max_message_id, db_path, character_id
+            )
+            delta = latest - last_seen
+            if delta >= batch_threshold:
+                logger.info("中期記憶バッチ実行 (delta=%d, latest=%d)", delta, latest)
+                history_rows = await asyncio.to_thread(
+                    fetch_recent_history, db_path, character_id, window_size
+                )
+                history_text = history_to_text(history_rows)
+                try:
+                    summary = await asyncio.to_thread(
+                        call_summarize,
+                        client,
+                        flash_model,
+                        summary_template,
+                        history_text,
+                        target_chars,
+                        game_name,
+                    )
+                except Exception:
+                    logger.exception("中期記憶の要約呼び出しに失敗")
+                    await asyncio.sleep(interval)
+                    continue
+                if not summary:
+                    logger.warning("要約結果が空でした (latest=%d)", latest)
+                else:
+                    await asyncio.to_thread(
+                        insert_mid_term_memory, db_path, character_id, summary
+                    )
+                    last_seen = latest
+                    logger.info(
+                        "中期記憶を保存 (latest=%d): %s", latest, summary[:60]
+                    )
+        except asyncio.CancelledError:
+            logger.info("中期記憶ループ停止")
+            raise
+        except Exception:
+            logger.exception("中期記憶ループで予期せぬ例外")
+
+        await asyncio.sleep(interval)
 
 
 VALID_TIERS = ("flash", "pro")
@@ -332,7 +521,7 @@ VALID_TIERS = ("flash", "pro")
 async def lifespan(app: FastAPI):
     cfg = load_config()
     app.state.config = cfg
-    init_db(cfg["database"]["path"])
+    init_db(cfg["database"]["path"], cfg["character"]["current_id"])
     app.state.gemini_client = build_gemini_client(cfg["gemini"]["api_key"])
     app.state.model_names = {
         "flash": cfg["gemini"]["flash_model"],
@@ -351,15 +540,18 @@ async def lifespan(app: FastAPI):
     )
     Path(cfg["capture"]["processing_dir"]).mkdir(parents=True, exist_ok=True)
 
-    task = asyncio.create_task(main_loop(app))
+    main_task = asyncio.create_task(main_loop(app))
+    mt_task = asyncio.create_task(mid_term_memory_loop(app))
     try:
         yield
     finally:
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            pass
+        for t in (main_task, mt_task):
+            t.cancel()
+        for t in (main_task, mt_task):
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -376,7 +568,10 @@ class ModelTierUpdate(BaseModel):
 @app.get("/api/messages/next")
 async def get_next_message():
     cfg = app.state.config
-    row = await asyncio.to_thread(fetch_next_unplayed_ai, cfg["database"]["path"])
+    character_id = cfg["character"]["current_id"]
+    row = await asyncio.to_thread(
+        fetch_next_unplayed_ai, cfg["database"]["path"], character_id
+    )
     if row is None:
         return {}
     return {
@@ -411,8 +606,9 @@ async def post_player_message(msg: PlayerMessage):
     if not text:
         raise HTTPException(status_code=400, detail="content is empty")
     cfg = app.state.config
+    character_id = cfg["character"]["current_id"]
     new_id = await asyncio.to_thread(
-        insert_message, cfg["database"]["path"], "player", text, 1
+        insert_message, cfg["database"]["path"], character_id, "player", text, 1
     )
     return {"id": new_id}
 

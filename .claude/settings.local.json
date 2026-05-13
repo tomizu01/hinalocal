@@ -6,7 +6,10 @@
       "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -m pip install mss==9.0.2 pygetwindow==0.0.9 2>&1 | Out-String)",
       "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import ast; ast.parse\\(open\\('C:/hinalive/backend/main.py','r',encoding='utf-8'\\).read\\(\\)\\); print\\('OK: syntax'\\)\")",
       "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; print\\('imports ok'\\); print\\('has capture_window:', hasattr\\(main,'capture_window'\\)\\); print\\('has find_window_rect:', hasattr\\(main,'find_window_rect'\\)\\); print\\('has process_and_save:', hasattr\\(main,'process_and_save'\\)\\); print\\('no rename_with_retry:', not hasattr\\(main,'rename_with_retry'\\)\\)\")",
-      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe C:\\\\hinalive\\\\backend\\\\_smoke_capture.py)"
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe C:\\\\hinalive\\\\backend\\\\_smoke_capture.py)",
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe C:\\\\hinalive\\\\backend\\\\_smoke_b.py)",
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; print\\('OK'\\); print\\('mid_term_memory_loop:', hasattr\\(main,'mid_term_memory_loop'\\)\\); print\\('call_summarize:', hasattr\\(main,'call_summarize'\\)\\); print\\('insert_mid_term_memory:', hasattr\\(main,'insert_mid_term_memory'\\)\\); print\\('fetch_max_message_id:', hasattr\\(main,'fetch_max_message_id'\\)\\)\")",
+      "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; cfg=main.load_config\\(\\); tmpl=main.read_prompt\\(cfg['prompts']['summary_path']\\); out=tmpl.format\\(target_chars=100, history_text='AI: hello\\\\nプレイヤー: hi', game_name=cfg['game']['name']\\); print\\('--- rendered ---'\\); print\\(out\\)\")"
     ]
   }
 }
