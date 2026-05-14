@@ -149,11 +149,12 @@ hinalive/
 
 # バックエンド仕様
 
-バックエンドは FastAPI 起動時に **2本の asyncio バックグラウンドタスク** を生やす
+バックエンドは FastAPI 起動時に **3本の asyncio バックグラウンドタスク** を生やす
 （API リクエスト処理をブロックしないため、必ず非同期で実装する）：
 
 1. **メインループ**：キャプチャ → 応援メッセージ生成
-2. **中期記憶ループ**：会話履歴の要約バッチ（独立した間隔で動く）
+2. **中期記憶ループ**：会話履歴の要約バッチ（独立した間隔で動く）。要約挿入後に好感度（affection）の判定も行う
+3. **感情ループ**：直近会話履歴から happy / tension / safe の変化を判定し emotions を更新（60秒間隔）
 
 DB操作（会話履歴・各種記憶テーブル）はすべて `character.current_id` を WHERE 条件に含み、
 現在のキャラクターに紐づくレコードだけを読み書きする。
@@ -204,9 +205,24 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
    - 現キャラ・現 Day の直近 `window_size` 件（既定 30件）の会話履歴を取得
    - `prompts/summary.md` テンプレートを `{target_chars}` `{history_text}` `{game_name}` で埋めてプロンプト化
    - flash モデルで要約 → `mid_term_memories` テーブルに `(character_id, summary, day=current_day, last_message_id=latest)` を追加
+   - **続けて好感度判定**：保存した `summary` を `{memory_text}` として `call_affection_judge` を呼び、`emotions.affection` に `±affection_delta` を反映（0-100 クランプ）。Gemini 呼び出しの頻度を要約と独立に変える可能性があるため、要約と1回にまとめず別途呼び出す
 5. `interval_seconds`（既定 10秒）待ってループ先頭へ戻る
 
 ※ 中期記憶の **会話生成プロンプトへの注入は本フェーズの対象外**（保存のみ実装）
+
+## 感情ループ
+
+感情値のうち `happy` / `tension` / `safe` の更新を 60 秒間隔で行う独立ループ。`affection` は本ループでは扱わず、中期記憶ループ側で更新する。判定モデルは flash 固定。
+
+1. `characters` マスターから現キャラの delta 値を取得（未登録なら警告ログを出してスキップ）
+2. 現キャラ・現 Day の直近 30 件の会話履歴を取得（履歴ゼロならスキップ）
+3. 履歴と `game_name` / `char_name` を埋め込んで `call_emotion_judge` を呼ぶ。出力は `response_mime_type=application/json` + `response_schema` で次のJSONに強制：
+   - `{"happy": "嬉しい|悲しい|どちらでもない", "tension": "上がる|下がる|どちらでもない", "safe": "安心|不安|どちらでもない"}`
+4. 返却値に応じて `emotions` を加減算（0-100 にクランプ）：
+   - 嬉しい / 上がる / 安心 → `+delta`
+   - 悲しい / 下がる / 不安 → `-delta`
+   - どちらでもない → 変化なし
+5. 60 秒待ってループ先頭へ戻る
 
 ## API一覧
 
@@ -272,6 +288,24 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 - INDEX `idx_mid_term_char` (`character_id`, `id` DESC)
 - INDEX `idx_mid_term_char_day` (`character_id`, `day`, `id` DESC)
 
+### `characters` テーブル（キャラクターマスター = 感情の変化差分）
+- `character_id` TEXT PRIMARY KEY  -- A-Za-z 1-16文字
+- `happy_delta` INTEGER NOT NULL DEFAULT 5  -- 嬉しさの変化差分
+- `tension_delta` INTEGER NOT NULL DEFAULT 5  -- テンションの変化差分
+- `safe_delta` INTEGER NOT NULL DEFAULT 5  -- 安心の変化差分
+- `affection_delta` INTEGER NOT NULL DEFAULT 5  -- プレイヤーへの好感度の変化差分
+- 起動時に `hina` レコードを `INSERT OR IGNORE` で挿入（全 delta = 5）
+- 同様に `config.character.current_id` のレコードも `INSERT OR IGNORE` で初期化
+
+### `emotions` テーブル（キャラごとの現在の感情値）
+- `character_id` TEXT PRIMARY KEY
+- `happy` INTEGER NOT NULL DEFAULT 50  -- 0-100、クランプ運用
+- `tension` INTEGER NOT NULL DEFAULT 50
+- `safe` INTEGER NOT NULL DEFAULT 50
+- `affection` INTEGER NOT NULL DEFAULT 50
+- 起動時に `config.character.current_id` のレコードを `INSERT OR IGNORE` で初期化（全値 50）
+- 更新は `apply_emotion_delta` で行い、`MAX(0, MIN(100, value + delta))` でクランプ
+
 ### マイグレーション方針
 - 起動時 `init_db` で `PRAGMA table_info(<table>)` を見て、不足カラム（`character_id`, `day`, `last_message_id`）があれば `ALTER TABLE ADD COLUMN` で追加
 - 既存行は以下の規則で backfill：
@@ -279,6 +313,7 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
   - `messages.day IS NULL` → `1`
   - `mid_term_memories.day IS NULL` → `1`
   - `mid_term_memories.last_message_id IS NULL` → `0`
+- `characters` / `emotions` テーブルは `CREATE TABLE IF NOT EXISTS` で初回作成し、`INSERT OR IGNORE` で初期行を投入する（追加カラム無し）
 - 上記は冪等で、再起動を繰り返しても副作用なし
 
 # フロントエンド仕様
@@ -360,6 +395,7 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1
 | デイミッション | `missions` テーブル（`character_id` × `day` で1件）。フロントから GET/PUT で編集。生成プロンプトにも注入 |
 | 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加）。長期は未実装 |
 | 要約モデル | 中期記憶バッチは常に flash 固定 |
+| 感情値 | `emotions`（happy/tension/safe/affection、0-100、default 50）。差分は `characters` マスター（hina 初期値=各 5）。happy/tension/safe は 60 秒間隔の感情ループで判定、affection は中期記憶挿入直後に判定。判定モデルは flash 固定で JSON 強制出力 |
 | テキスト/音声同期 | 同時開始のみ、末尾ズレ許容（7文字/s 固定） |
 | 再生済フラグ | 取得時に即立てる（取りこぼし許容） |
 | 画像添付 | 最新キャプチャ1枚のみ |

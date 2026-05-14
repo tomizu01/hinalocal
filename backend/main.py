@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import re
@@ -200,6 +201,57 @@ def init_db(db_path: str, default_character_id: str) -> None:
             "ON mid_term_memories(character_id, day, id DESC)"
         )
 
+        # キャラクターマスター（感情変化の差分を保持）
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS characters (
+                character_id TEXT PRIMARY KEY,
+                happy_delta INTEGER NOT NULL DEFAULT 5,
+                tension_delta INTEGER NOT NULL DEFAULT 5,
+                safe_delta INTEGER NOT NULL DEFAULT 5,
+                affection_delta INTEGER NOT NULL DEFAULT 5
+            )
+            """
+        )
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO characters "
+            "(character_id, happy_delta, tension_delta, safe_delta, affection_delta) "
+            "VALUES ('hina', 5, 5, 5, 5)"
+        )
+        if cur.rowcount > 0:
+            logger.info("characters マスターに hina (deltas=5) を挿入")
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO characters "
+            "(character_id, happy_delta, tension_delta, safe_delta, affection_delta) "
+            "VALUES (?, 5, 5, 5, 5)",
+            (default_character_id,),
+        )
+        if cur.rowcount > 0:
+            logger.info(
+                "characters マスターに %s (deltas=5) を挿入", default_character_id
+            )
+
+        # 感情値テーブル（PKはキャラID、0-100にクランプして運用）
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS emotions (
+                character_id TEXT PRIMARY KEY,
+                happy INTEGER NOT NULL DEFAULT 50,
+                tension INTEGER NOT NULL DEFAULT 50,
+                safe INTEGER NOT NULL DEFAULT 50,
+                affection INTEGER NOT NULL DEFAULT 50
+            )
+            """
+        )
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO emotions (character_id) VALUES (?)",
+            (default_character_id,),
+        )
+        if cur.rowcount > 0:
+            logger.info(
+                "emotions に %s の初期行を挿入 (各値 50)", default_character_id
+            )
+
         # ミッションテーブル（day × character_id で1件）
         conn.execute(
             """
@@ -377,6 +429,53 @@ def upsert_mission(
         conn.commit()
 
 
+def fetch_character_master(
+    db_path: str, character_id: str
+) -> sqlite3.Row | None:
+    """characters マスターから差分値を取得。未登録なら None。"""
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT character_id, happy_delta, tension_delta, safe_delta, "
+            "affection_delta FROM characters WHERE character_id = ?",
+            (character_id,),
+        ).fetchone()
+    return row
+
+
+def apply_emotion_delta(
+    db_path: str,
+    character_id: str,
+    dh: int,
+    dt: int,
+    ds: int,
+    da: int,
+) -> sqlite3.Row:
+    """emotions を +delta 加算し 0-100 にクランプ。レコードがなければ初期値で作成。
+    更新後の値を返す。
+    """
+    with db_connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO emotions (character_id) VALUES (?)",
+            (character_id,),
+        )
+        conn.execute(
+            "UPDATE emotions SET "
+            "happy = MAX(0, MIN(100, happy + ?)), "
+            "tension = MAX(0, MIN(100, tension + ?)), "
+            "safe = MAX(0, MIN(100, safe + ?)), "
+            "affection = MAX(0, MIN(100, affection + ?)) "
+            "WHERE character_id = ?",
+            (dh, dt, ds, da, character_id),
+        )
+        row = conn.execute(
+            "SELECT happy, tension, safe, affection FROM emotions "
+            "WHERE character_id = ?",
+            (character_id,),
+        ).fetchone()
+        conn.commit()
+    return row
+
+
 def fetch_recent_mid_term_memories(
     db_path: str, character_id: str, limit: int
 ) -> list[sqlite3.Row]:
@@ -515,6 +614,140 @@ def call_summarize(
         ],
     )
     return (response.text or "").strip()
+
+
+EMOTION_HAPPY_CHOICES = ("嬉しい", "悲しい", "どちらでもない")
+EMOTION_TENSION_CHOICES = ("上がる", "下がる", "どちらでもない")
+EMOTION_SAFE_CHOICES = ("安心", "不安", "どちらでもない")
+AFFECTION_CHOICES = ("上がる", "下がる", "どちらでもない")
+
+
+def _emotion_schema() -> genai_types.Schema:
+    return genai_types.Schema(
+        type="OBJECT",
+        properties={
+            "happy": genai_types.Schema(
+                type="STRING", enum=list(EMOTION_HAPPY_CHOICES)
+            ),
+            "tension": genai_types.Schema(
+                type="STRING", enum=list(EMOTION_TENSION_CHOICES)
+            ),
+            "safe": genai_types.Schema(
+                type="STRING", enum=list(EMOTION_SAFE_CHOICES)
+            ),
+        },
+        required=["happy", "tension", "safe"],
+    )
+
+
+def _affection_schema() -> genai_types.Schema:
+    return genai_types.Schema(
+        type="OBJECT",
+        properties={
+            "affection": genai_types.Schema(
+                type="STRING", enum=list(AFFECTION_CHOICES)
+            ),
+        },
+        required=["affection"],
+    )
+
+
+def call_emotion_judge(
+    client: genai.Client,
+    model: str,
+    game_name: str,
+    char_name: str,
+    history_text: str,
+) -> dict[str, str] | None:
+    """直近会話から happy / tension / safe の変化を判定。失敗時 None。"""
+    prompt = (
+        f'現在、ゲーム"{game_name}"で、ゲームプレイヤーとAIキャラクター'
+        f"{char_name}が会話しながらプレイ中です。\n\n"
+        f"以下は、{char_name}とゲームプレイヤーの直近の会話履歴です。\n\n"
+        "[会話履歴]\n"
+        f"{history_text}\n\n"
+        "この会話履歴から、プレイヤーの感情の変化を推測して、"
+        "下記の選択肢から選択してください。\n\n"
+        "嬉しさの変化: 嬉しい / 悲しい / どちらでもない\n"
+        "テンションの変化: 上がる / 下がる / どちらでもない\n"
+        "安心感の変化: 安心 / 不安 / どちらでもない\n\n"
+        "必ず以下のキーを持つ JSON を返してください。"
+        "値は各選択肢のいずれか1つの文字列のみ:\n"
+        '{"happy": "<嬉しい|悲しい|どちらでもない>", '
+        '"tension": "<上がる|下がる|どちらでもない>", '
+        '"safe": "<安心|不安|どちらでもない>"}'
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=[
+            genai_types.Content(
+                role="user",
+                parts=[genai_types.Part.from_text(text=prompt)],
+            )
+        ],
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_emotion_schema(),
+        ),
+    )
+    text = (response.text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("感情判定の JSON パース失敗: %r", text[:200])
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def call_affection_judge(
+    client: genai.Client,
+    model: str,
+    game_name: str,
+    char_name: str,
+    memory_text: str,
+) -> dict[str, str] | None:
+    """中期記憶（要約）から affection の変化を判定。失敗時 None。"""
+    prompt = (
+        f'現在、ゲーム"{game_name}"で、ゲームプレイヤーとAIキャラクター'
+        f"{char_name}が会話しながらプレイ中です。\n\n"
+        f"以下は、{char_name}とゲームプレイヤーの最近の出来事です。\n\n"
+        "[最近の出来事]\n"
+        f"{memory_text}\n\n"
+        "この内容から、プレイヤーへの好感度の変化を推測して、"
+        "下記の選択肢から選択してください。\n\n"
+        "好感度: 上がる / 下がる / どちらでもない\n\n"
+        "必ず以下のキーを持つ JSON を返してください。"
+        "値は選択肢のいずれか1つの文字列のみ:\n"
+        '{"affection": "<上がる|下がる|どちらでもない>"}'
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=[
+            genai_types.Content(
+                role="user",
+                parts=[genai_types.Part.from_text(text=prompt)],
+            )
+        ],
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_affection_schema(),
+        ),
+    )
+    text = (response.text or "").strip()
+    if not text:
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("好感度判定の JSON パース失敗: %r", text[:200])
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
 
 
 def call_gemini(
@@ -782,6 +1015,55 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
                         latest,
                         summary[:60],
                     )
+                    # 続いて好感度の変化を判定（独立して呼び出す。
+                    # 既存の要約と1回にまとめることもできるが、頻度を別途
+                    # 変える可能性があるため分離している）
+                    char_name = app.state.character_setting["name"]
+                    master = await asyncio.to_thread(
+                        fetch_character_master, db_path, character_id
+                    )
+                    if master is None:
+                        logger.warning(
+                            "characters マスター未登録 (%s) のため好感度判定をスキップ",
+                            character_id,
+                        )
+                    else:
+                        try:
+                            ares = await asyncio.to_thread(
+                                call_affection_judge,
+                                client,
+                                flash_model,
+                                game_name,
+                                char_name,
+                                summary,
+                            )
+                        except Exception:
+                            logger.exception("好感度判定の Gemini 呼び出しに失敗")
+                            ares = None
+                        if ares is not None:
+                            a_delta = master["affection_delta"]
+                            choice = ares.get("affection")
+                            if choice == "上がる":
+                                da = a_delta
+                            elif choice == "下がる":
+                                da = -a_delta
+                            else:
+                                da = 0
+                            updated = await asyncio.to_thread(
+                                apply_emotion_delta,
+                                db_path,
+                                character_id,
+                                0,
+                                0,
+                                0,
+                                da,
+                            )
+                            logger.info(
+                                "好感度更新: da=%+d (choice=%s) → affection=%d",
+                                da,
+                                choice,
+                                updated["affection"],
+                            )
         except asyncio.CancelledError:
             logger.info("中期記憶ループ停止")
             raise
@@ -789,6 +1071,124 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
             logger.exception("中期記憶ループで予期せぬ例外")
 
         await asyncio.sleep(interval)
+
+
+EMOTION_LOOP_INTERVAL_SECONDS = 60
+EMOTION_HISTORY_COUNT = 30
+
+
+async def emotion_loop(app: FastAPI) -> None:
+    """感情値（happy / tension / safe）更新ループ。
+    現キャラ・現 Day の直近 30 件の会話履歴を flash モデルに渡して
+    嬉しさ / テンション / 安心の変化を判定し、emotions テーブルに
+    キャラマスターの delta を加減算（0-100 クランプ）で反映する。
+    affection はこのループではなく中期記憶ループ側で更新する。
+    """
+    cfg = app.state.config
+    db_path = cfg["database"]["path"]
+    character_id = cfg["character"]["current_id"]
+    current_day = app.state.current_day
+    flash_model = cfg["gemini"]["flash_model"]
+    game_name = cfg["game"]["name"]
+    char_name = app.state.character_setting["name"]
+    client: genai.Client = app.state.gemini_client
+
+    logger.info(
+        "感情ループ開始: character=%s day=%s interval=%ss history=%d",
+        character_id,
+        current_day,
+        EMOTION_LOOP_INTERVAL_SECONDS,
+        EMOTION_HISTORY_COUNT,
+    )
+
+    while True:
+        try:
+            master = await asyncio.to_thread(
+                fetch_character_master, db_path, character_id
+            )
+            if master is None:
+                logger.warning(
+                    "characters マスター未登録 (%s) のため感情判定をスキップ",
+                    character_id,
+                )
+            else:
+                history_rows = await asyncio.to_thread(
+                    fetch_recent_history,
+                    db_path,
+                    character_id,
+                    EMOTION_HISTORY_COUNT,
+                    current_day,
+                )
+                if not history_rows:
+                    logger.debug("感情判定: 会話履歴なし、スキップ")
+                else:
+                    history_text = history_to_text(history_rows)
+                    try:
+                        result = await asyncio.to_thread(
+                            call_emotion_judge,
+                            client,
+                            flash_model,
+                            game_name,
+                            char_name,
+                            history_text,
+                        )
+                    except Exception:
+                        logger.exception("感情判定の Gemini 呼び出しに失敗")
+                        result = None
+                    if result is not None:
+                        h_delta = master["happy_delta"]
+                        t_delta = master["tension_delta"]
+                        s_delta = master["safe_delta"]
+                        h_choice = result.get("happy")
+                        t_choice = result.get("tension")
+                        s_choice = result.get("safe")
+                        if h_choice == "嬉しい":
+                            dh = h_delta
+                        elif h_choice == "悲しい":
+                            dh = -h_delta
+                        else:
+                            dh = 0
+                        if t_choice == "上がる":
+                            dt = t_delta
+                        elif t_choice == "下がる":
+                            dt = -t_delta
+                        else:
+                            dt = 0
+                        if s_choice == "安心":
+                            ds = s_delta
+                        elif s_choice == "不安":
+                            ds = -s_delta
+                        else:
+                            ds = 0
+                        updated = await asyncio.to_thread(
+                            apply_emotion_delta,
+                            db_path,
+                            character_id,
+                            dh,
+                            dt,
+                            ds,
+                            0,
+                        )
+                        logger.info(
+                            "感情更新: dh=%+d dt=%+d ds=%+d (h=%s t=%s s=%s) "
+                            "→ happy=%d tension=%d safe=%d",
+                            dh,
+                            dt,
+                            ds,
+                            h_choice,
+                            t_choice,
+                            s_choice,
+                            updated["happy"],
+                            updated["tension"],
+                            updated["safe"],
+                        )
+        except asyncio.CancelledError:
+            logger.info("感情ループ停止")
+            raise
+        except Exception:
+            logger.exception("感情ループで予期せぬ例外")
+
+        await asyncio.sleep(EMOTION_LOOP_INTERVAL_SECONDS)
 
 
 VALID_TIERS = ("flash", "pro")
@@ -854,12 +1254,13 @@ async def lifespan(app: FastAPI):
 
     main_task = asyncio.create_task(main_loop(app))
     mt_task = asyncio.create_task(mid_term_memory_loop(app))
+    emo_task = asyncio.create_task(emotion_loop(app))
     try:
         yield
     finally:
-        for t in (main_task, mt_task):
+        for t in (main_task, mt_task, emo_task):
             t.cancel()
-        for t in (main_task, mt_task):
+        for t in (main_task, mt_task, emo_task):
             try:
                 await t
             except asyncio.CancelledError:
