@@ -598,11 +598,13 @@ def call_summarize(
     history_text: str,
     target_chars: int,
     game_name: str,
+    char_name: str,
 ) -> str:
     user_text = template.format(
         target_chars=target_chars,
         history_text=history_text,
         game_name=game_name,
+        char_name=char_name,
     )
     response = client.models.generate_content(
         model=model,
@@ -934,6 +936,7 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
     interval = mt_cfg["interval_seconds"]
     flash_model = cfg["gemini"]["flash_model"]
     game_name = cfg["game"]["name"]
+    char_name = app.state.character_setting["name"]
     summary_template = read_prompt(cfg["prompts"]["summary_path"])
     client: genai.Client = app.state.gemini_client
 
@@ -993,6 +996,7 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
                         history_text,
                         target_chars,
                         game_name,
+                        char_name,
                     )
                 except Exception:
                     logger.exception("中期記憶の要約呼び出しに失敗")
@@ -1018,7 +1022,6 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
                     # 続いて好感度の変化を判定（独立して呼び出す。
                     # 既存の要約と1回にまとめることもできるが、頻度を別途
                     # 変える可能性があるため分離している）
-                    char_name = app.state.character_setting["name"]
                     master = await asyncio.to_thread(
                         fetch_character_master, db_path, character_id
                     )
