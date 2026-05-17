@@ -57,7 +57,33 @@
     return r;
   }
 
+  async function tryMissionCommand(text) {
+    const prefix = "ミッション";
+    if (!text.startsWith(prefix)) return false;
+    const rest = text
+      .slice(prefix.length)
+      .replace(/^[\s、。：:,.]+/, "")
+      .trim();
+    if (!rest) return false;
+    try {
+      const res = await fetch("/api/mission", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content: rest }),
+      });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      const data = await res.json();
+      applyMission(data);
+      setStatus(`ミッション更新: ${rest.slice(0, 30)}`);
+    } catch (e) {
+      console.error("ミッション音声更新失敗", e);
+      setStatus("ミッション更新失敗");
+    }
+    return true;
+  }
+
   async function postPlayer(text) {
+    if (await tryMissionCommand(text)) return;
     try {
       await fetch("/api/messages/player", {
         method: "POST",
