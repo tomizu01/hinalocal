@@ -624,34 +624,26 @@ EMOTION_SAFE_CHOICES = ("安心", "不安", "どちらでもない")
 AFFECTION_CHOICES = ("上がる", "下がる", "どちらでもない")
 
 
-def _emotion_schema() -> genai_types.Schema:
-    return genai_types.Schema(
-        type="OBJECT",
-        properties={
-            "happy": genai_types.Schema(
-                type="STRING", enum=list(EMOTION_HAPPY_CHOICES)
-            ),
-            "tension": genai_types.Schema(
-                type="STRING", enum=list(EMOTION_TENSION_CHOICES)
-            ),
-            "safe": genai_types.Schema(
-                type="STRING", enum=list(EMOTION_SAFE_CHOICES)
-            ),
+def _emotion_schema() -> dict:
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "happy": {"type": "STRING", "enum": list(EMOTION_HAPPY_CHOICES)},
+            "tension": {"type": "STRING", "enum": list(EMOTION_TENSION_CHOICES)},
+            "safe": {"type": "STRING", "enum": list(EMOTION_SAFE_CHOICES)},
         },
-        required=["happy", "tension", "safe"],
-    )
+        "required": ["happy", "tension", "safe"],
+    }
 
 
-def _affection_schema() -> genai_types.Schema:
-    return genai_types.Schema(
-        type="OBJECT",
-        properties={
-            "affection": genai_types.Schema(
-                type="STRING", enum=list(AFFECTION_CHOICES)
-            ),
+def _affection_schema() -> dict:
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "affection": {"type": "STRING", "enum": list(AFFECTION_CHOICES)},
         },
-        required=["affection"],
-    )
+        "required": ["affection"],
+    }
 
 
 def call_emotion_judge(

@@ -14,7 +14,12 @@
       "PowerShell(& C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import sys; sys.path.insert\\(0,'C:/hinalive/backend'\\); import main; print\\('OK'\\)\")",
       "Bash(python *)",
       "Bash(mkdir -p C:/hinalive/backend/characters/hina/prompts C:/hinalive/frontend/images/hina)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe *)",
+      "PowerShell(& \"C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe\" -c \"import google.genai; print\\(google.genai.__version__\\)\")",
+      "PowerShell(& \"C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe\" -c \"from google.genai import types as t; from google.genai._transformers import t_schema; s = t.Schema\\(type='OBJECT', properties={'happy': t.Schema\\(type='STRING', enum=['a','b']\\)}, required=['happy']\\); print\\(t_schema\\(None, s\\)\\)\")",
+      "PowerShell(& \"C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe\" -c \"from google.genai._transformers import t_schema; d = {'type': 'OBJECT', 'properties': {'happy': {'type': 'STRING', 'enum': ['a','b']}}, 'required': ['happy']}; print\\(t_schema\\(None, d\\)\\)\")",
+      "PowerShell(& \"C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe\" -c \"import sys; sys.path.insert\\(0, r'C:\\\\hinalive\\\\backend'\\); from main import _emotion_schema, _affection_schema; from google.genai._transformers import t_schema; print\\(t_schema\\(None, _emotion_schema\\(\\)\\)\\); print\\(t_schema\\(None, _affection_schema\\(\\)\\)\\)\")"
     ]
   }
 }
