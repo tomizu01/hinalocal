@@ -591,6 +591,30 @@ def build_gemini_client(api_key: str) -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+def log_empty_gemini_response(label: str, model: str, response) -> None:
+    """空応答の理由（safety filterブロック / finish_reason 等）をログに出す。"""
+    pf = getattr(response, "prompt_feedback", None)
+    block_reason = getattr(pf, "block_reason", None)
+    block_message = getattr(pf, "block_reason_message", None)
+    prompt_safety = getattr(pf, "safety_ratings", None)
+    candidates = getattr(response, "candidates", None) or []
+    finish_reasons = [getattr(c, "finish_reason", None) for c in candidates]
+    finish_messages = [getattr(c, "finish_message", None) for c in candidates]
+    candidate_safety = [getattr(c, "safety_ratings", None) for c in candidates]
+    logger.warning(
+        "Gemini空応答 [%s] model=%s block_reason=%s block_message=%s "
+        "prompt_safety=%s finish_reasons=%s finish_messages=%s candidate_safety=%s",
+        label,
+        model,
+        block_reason,
+        block_message,
+        prompt_safety,
+        finish_reasons,
+        finish_messages,
+        candidate_safety,
+    )
+
+
 def call_summarize(
     client: genai.Client,
     model: str,
@@ -615,7 +639,10 @@ def call_summarize(
             )
         ],
     )
-    return (response.text or "").strip()
+    text = (response.text or "").strip()
+    if not text:
+        log_empty_gemini_response("summarize", model, response)
+    return text
 
 
 EMOTION_HAPPY_CHOICES = ("嬉しい", "悲しい", "どちらでもない")
@@ -686,6 +713,7 @@ def call_emotion_judge(
     )
     text = (response.text or "").strip()
     if not text:
+        log_empty_gemini_response("emotion_judge", model, response)
         return None
     try:
         data = json.loads(text)
@@ -733,6 +761,7 @@ def call_affection_judge(
     )
     text = (response.text or "").strip()
     if not text:
+        log_empty_gemini_response("affection_judge", model, response)
         return None
     try:
         data = json.loads(text)
@@ -787,6 +816,8 @@ def call_gemini(
         ),
     )
     text = (response.text or "").strip()
+    if not text:
+        log_empty_gemini_response("main", model, response)
     return text
 
 

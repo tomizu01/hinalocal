@@ -13,11 +13,26 @@
   </div>
 
   <main class="app">
-    <section class="mission" id="mission-section">
-      <span class="mission-label">現在のミッション：</span>
-      <span id="mission-text" class="mission-text"></span>
-      <button type="button" id="mission-edit-btn">編集</button>
-    </section>
+    <div class="game-area"></div>
+
+    <aside class="right-col">
+      <section class="mission" id="mission-section">
+        <div class="mission-header">
+          <span class="mission-label">現在のミッション：</span>
+          <button type="button" id="mission-edit-btn" aria-label="編集">✎</button>
+        </div>
+        <span id="mission-text" class="mission-text"></span>
+      </section>
+
+      <div class="right-spacer">
+        <button type="button" id="model-btn" data-tier="flash">モデル: FLASH</button>
+        <span id="status-text" class="status"></span>
+      </div>
+
+      <section class="character">
+        <img id="character-img" alt="character" />
+      </section>
+    </aside>
 
     <div id="mission-modal" class="mission-modal hidden">
       <div class="mission-modal-box">
@@ -35,10 +50,6 @@
       </div>
     </div>
 
-    <section class="character">
-      <img id="character-img" alt="character" />
-    </section>
-
     <section class="bubble">
       <p id="bubble-text"></p>
     </section>
@@ -53,12 +64,8 @@
         />
         <button type="submit" id="send-btn">送信</button>
       </form>
-      <div class="mic-row">
-        <button type="button" id="mic-btn">🎤 音声入力</button>
-        <button type="button" id="auto-btn" aria-pressed="false">AUTO: OFF</button>
-        <button type="button" id="model-btn" data-tier="flash">モデル: FLASH</button>
-        <span id="status-text" class="status"></span>
-      </div>
+      <button type="button" id="mic-btn">🎤 音声入力</button>
+      <button type="button" id="auto-btn" aria-pressed="false">AUTO: OFF</button>
       <p id="last-player" class="last-player"></p>
     </section>
   </main>

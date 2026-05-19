@@ -6,52 +6,232 @@ html,
 body {
   margin: 0;
   padding: 0;
-  height: 100%;
+  min-height: 100%;
   font-family: "Segoe UI", "Hiragino Sans", "Yu Gothic UI", sans-serif;
-  background: #0e1116;
-  color: #e6e8eb;
+  color: #1a1f29;
+}
+
+body {
+  background: #fff;
 }
 
 .app {
+  display: grid;
+  grid-template-columns: 1440px 480px;
+  grid-template-rows: 810px 200px 70px;
+  width: 1920px;
+  height: 1080px;
+  background: url("images/parts/hina_room.png") top left / 1920px 1080px no-repeat;
+}
+
+.game-area {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.right-col {
+  grid-column: 2;
+  grid-row: 1 / 4;
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  padding: 12px;
-  gap: 12px;
+  width: 480px;
+  height: 1080px;
 }
 
 .mission {
   flex: 0 0 auto;
+  background: rgba(0, 80, 255, 0.5);
   display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 16px 20px;
+  color: #fff;
+}
+
+.mission-header {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-  gap: 8px;
-  background: #11161e;
-  border: 1px solid #2a3140;
-  border-radius: 8px;
-  padding: 8px 12px;
+  gap: 10px;
 }
 
 .mission-label {
-  color: #9aa3af;
-  font-size: 13px;
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
   white-space: nowrap;
 }
 
 .mission-text {
-  flex: 1 1 auto;
-  color: #e6e8eb;
-  font-size: 16px;
+  display: block;
+  color: #fff;
+  font-size: 18px;
+  line-height: 1.5;
   word-break: break-word;
+  white-space: pre-wrap;
 }
 
 .mission-text:empty::before {
   content: "（未設定）";
-  color: #5a6271;
+  color: rgba(255, 255, 255, 0.7);
 }
 
-.mission button {
-  padding: 6px 10px;
+#mission-edit-btn {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  color: #fff;
+  padding: 4px 10px;
+  font-size: 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+
+#mission-edit-btn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.right-spacer {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  padding: 16px 20px;
+  gap: 8px;
+  min-height: 0;
+}
+
+#model-btn {
+  background: rgba(255, 255, 255, 0.9);
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  color: #1a1f29;
+  padding: 8px 16px;
+  border-radius: 20px;
   font-size: 13px;
+  cursor: pointer;
+}
+
+#model-btn[aria-pressed="true"] {
+  background: #2e6dd2;
+  color: #fff;
+  border-color: #2e6dd2;
+}
+
+.status {
+  font-size: 12px;
+  color: #1a1f29;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 4px 10px;
+  border-radius: 4px;
+}
+
+.status:empty {
+  display: none;
+}
+
+.character {
+  flex: 0 0 600px;
+  height: 600px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+.character img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+.bubble {
+  grid-column: 1;
+  grid-row: 2;
+  background: rgba(235, 122, 239, 0.5);
+  padding: 16px 24px;
+  overflow-y: auto;
+  font-size: 28px;
+  line-height: 1.4;
+  color: #fff;
+}
+
+.bubble p {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.input-area {
+  grid-column: 1;
+  grid-row: 3;
+  background: rgba(38, 165, 0, 0.5);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 16px;
+}
+
+#player-form {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+#player-input {
+  width: 240px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.92);
+  color: #1a1f29;
+  font-size: 14px;
+}
+
+#player-input:focus {
+  outline: none;
+  border-color: #fff;
+}
+
+.input-area button {
+  padding: 8px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.88);
+  color: #1a1f29;
+  font-size: 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.input-area button:hover {
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.input-area button[aria-pressed="true"] {
+  background: #2e6dd2;
+  color: #fff;
+  border-color: #2e6dd2;
+}
+
+.last-player {
+  flex: 1 1 auto;
+  margin: 0;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.35);
+  border-radius: 6px;
+  color: #fff;
+  font-size: 15px;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 1.6em;
+}
+
+.last-player:empty::before {
+  content: "認識済音声テキスト";
+  color: rgba(255, 255, 255, 0.7);
 }
 
 .mission-modal {
@@ -77,6 +257,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  color: #e6e8eb;
 }
 
 .mission-modal-title {
@@ -106,69 +287,9 @@ body {
   gap: 8px;
 }
 
-.character {
-  flex: 0 0 auto;
-  display: flex;
-  justify-content: center;
-  align-items: center;
-}
-
-.character img {
-  max-width: 100%;
-  max-height: 50vh;
-  object-fit: contain;
-  border-radius: 12px;
-  background: #1a1f29;
-}
-
-.bubble {
-  flex: 1 1 auto;
-  background: #1a1f29;
-  border: 1px solid #2a3140;
-  border-radius: 12px;
-  padding: 16px;
-  overflow-y: auto;
-  min-height: 80px;
-  font-size: 32px;
-  line-height: 1.6;
-}
-
-.bubble p {
-  margin: 0;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.input-area {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-#player-form {
-  display: flex;
-  gap: 8px;
-}
-
-#player-input {
-  flex: 1 1 auto;
-  padding: 10px 12px;
-  border-radius: 8px;
-  border: 1px solid #2a3140;
-  background: #0e1116;
-  color: #e6e8eb;
-  font-size: 14px;
-}
-
-#player-input:focus {
-  outline: none;
-  border-color: #5aa9ff;
-}
-
-button {
-  padding: 10px 14px;
-  border-radius: 8px;
+.mission-modal-actions button {
+  padding: 8px 14px;
+  border-radius: 6px;
   border: 1px solid #2a3140;
   background: #1a1f29;
   color: #e6e8eb;
@@ -176,41 +297,8 @@ button {
   cursor: pointer;
 }
 
-button:hover {
+.mission-modal-actions button:hover {
   background: #232a37;
-}
-
-button[aria-pressed="true"] {
-  background: #2e6dd2;
-  border-color: #2e6dd2;
-}
-
-.mic-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.status {
-  font-size: 13px;
-  color: #9aa3af;
-}
-
-.last-player {
-  margin: 0;
-  padding: 8px 12px;
-  background: #11161e;
-  border: 1px solid #2a3140;
-  border-radius: 8px;
-  color: #cdd3dc;
-  font-size: 20px;
-  min-height: 1.4em;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.last-player:empty {
-  display: none;
 }
 
 .start-overlay {
@@ -223,14 +311,17 @@ button[aria-pressed="true"] {
   align-items: center;
   gap: 16px;
   z-index: 10;
+  color: #e6e8eb;
 }
 
 .start-overlay button {
   font-size: 24px;
   padding: 16px 36px;
   background: #2e6dd2;
-  border-color: #2e6dd2;
+  border: 1px solid #2e6dd2;
+  border-radius: 8px;
   color: #fff;
+  cursor: pointer;
 }
 
 .start-overlay button:hover {
