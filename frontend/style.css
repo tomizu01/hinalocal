@@ -40,7 +40,9 @@ body {
 
 .mission {
   flex: 0 0 auto;
+  margin: 5px;
   background: rgba(0, 80, 255, 0.5);
+  border-radius: 12px;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -130,8 +132,8 @@ body {
 }
 
 .character {
-  flex: 0 0 600px;
-  height: 600px;
+  flex: 0 0 800px;
+  height: 800px;
   display: flex;
   justify-content: center;
   align-items: flex-end;
@@ -139,15 +141,23 @@ body {
 }
 
 .character img {
-  max-width: 100%;
-  max-height: 100%;
+  width: 480px;
+  height: auto;
   object-fit: contain;
 }
 
 .bubble {
   grid-column: 1;
   grid-row: 2;
+  margin: 5px 15px 5px 50px;
+  position: relative;
+}
+
+.bubble-body {
+  width: 100%;
+  height: 100%;
   background: rgba(235, 122, 239, 0.5);
+  border-radius: 12px;
   padding: 16px 24px;
   overflow-y: auto;
   font-size: 28px;
@@ -155,20 +165,49 @@ body {
   color: #fff;
 }
 
-.bubble p {
+.bubble-body p {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
 }
 
+.bubble::after {
+  content: "";
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 15px 0 15px 10px;
+  border-color: transparent transparent transparent rgba(235, 122, 239, 0.5);
+}
+
 .input-area {
   grid-column: 1;
   grid-row: 3;
+  margin: 5px 50px 5px 15px;
   background: rgba(38, 165, 0, 0.5);
+  border-radius: 12px;
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 8px 16px;
+  position: relative;
+}
+
+.input-area::before {
+  content: "";
+  position: absolute;
+  right: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 15px 10px 15px 0;
+  border-color: transparent rgba(38, 165, 0, 0.5) transparent transparent;
 }
 
 #player-form {
