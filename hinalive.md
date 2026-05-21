@@ -37,7 +37,7 @@
 - FastAPI
 - uvicorn（ローカルサーバ、ポート 8000、http）
 - SQLite3
-- 使用AIモデル：`gemini-3.1-pro-preview`,`gemini-3-flash-preview` ※切り替え可能
+- 使用AIモデル：`gemini-3.1-pro-preview`,`gemini-3.5-flash` ※切り替え可能
 
 ## フロントエンド
 - HTML / CSS / JavaScript（素のJS）
@@ -94,7 +94,7 @@ hinalive/
 
 ## backend/config.yaml
 - Gemini APIキー
-- 使用モデル名（`gemini-3.1-pro-preview` / `gemini-3-flash-preview`）と起動時デフォルト
+- 使用モデル名（`gemini-3.1-pro-preview` / `gemini-3.5-flash`）と起動時デフォルト
 - 対象ウィンドウタイトル（部分一致、`capture.window_title`）
 - 加工後画像の保存フォルダ（`capture.processing_dir`）
 - キャプチャ画像のクリップ座標（ウィンドウ左上原点。すべて0なら無効）
@@ -389,7 +389,7 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1
 |---|---|
 | コンセプト | 実況＋応援の相棒型（汎用、タイトル非依存） |
 | ゲーム切替方式 | プロンプトファイルを差し替え（手動。`config.yaml` で active を指定） |
-| Geminiモデル | `gemini-3.1-pro-preview`,`gemini-3-flash-preview` |
+| Geminiモデル | `gemini-3.1-pro-preview`,`gemini-3.5-flash` |
 | Pythonバージョン | 3.13 |
 | ElevenLabsプラン | Creator で開始、不足時 Pro へ |
 | キャプチャ方式 | Python ネイティブ（`mss` + `pygetwindow`、ウィンドウタイトル指定）。加工後JPGのみ保存 |

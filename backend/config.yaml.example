@@ -5,7 +5,7 @@
 # Gemini設定
 gemini:
   api_key: "YOUR_GEMINI_API_KEY_HERE"
-  flash_model: "gemini-3-flash-preview"
+  flash_model: "gemini-3.5-flash"
   pro_model: "gemini-3.1-pro-preview"
   # 起動直後のモデル ("flash" or "pro")
   default_tier: "flash"
