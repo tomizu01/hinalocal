@@ -847,7 +847,7 @@ def call_gemini(
         "添付の画像は現在のゲーム画面のキャプチャです。"
         "今までの会話履歴に自然につながる形で次に話す一言を出力してください。"
         "画像の内容も踏まえて、発話してください。"
-        "出力は応援メッセージ本文のみで、説明や注釈は付けないでください。"
+        "出力は発話本文のみで、説明や注釈は付けないでください。"
     )
     image_bytes = image_path.read_bytes()
     image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
