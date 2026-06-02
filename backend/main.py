@@ -548,6 +548,25 @@ def format_recollections_text(rows: list[sqlite3.Row]) -> str:
     return "\n".join(lines)
 
 
+def reset_emotions_excluding_affection(
+    db_path: str, character_id: str, value: int = 50
+) -> None:
+    """emotions の happy / tension / safe を `value` に直接セットする。
+    affection は変更しない（前日からの好感度を維持するため）。
+    レコードが無ければ初期値で作成してから値を上書き。"""
+    with db_connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO emotions (character_id) VALUES (?)",
+            (character_id,),
+        )
+        conn.execute(
+            "UPDATE emotions SET happy = ?, tension = ?, safe = ? "
+            "WHERE character_id = ?",
+            (value, value, value, character_id),
+        )
+        conn.commit()
+
+
 def fetch_mission(db_path: str, character_id: str, day: int) -> str:
     """現キャラ・day のミッション本文。なければ空文字。"""
     with db_connect(db_path) as conn:
@@ -674,14 +693,15 @@ def apply_emotion_delta(
 
 
 def fetch_recent_mid_term_memories(
-    db_path: str, character_id: str, limit: int
+    db_path: str, character_id: str, limit: int, day: int
 ) -> list[sqlite3.Row]:
-    """直近の中期記憶を古い順で返す。"""
+    """指定キャラ・指定 day の中期記憶を直近 limit 件、古い順で返す。
+    過去 Day の概要は引き継がず、必要に応じて長期記憶（recollections）側で参照する。"""
     with db_connect(db_path) as conn:
         rows = conn.execute(
             "SELECT id, summary, created_at FROM mid_term_memories "
-            "WHERE character_id = ? ORDER BY id DESC LIMIT ?",
-            (character_id, limit),
+            "WHERE character_id = ? AND day = ? ORDER BY id DESC LIMIT ?",
+            (character_id, day, limit),
         ).fetchall()
     return list(reversed(rows))
 
@@ -1177,7 +1197,11 @@ async def main_loop(app: FastAPI) -> None:
             history_text = history_to_text(history_rows)
 
             mid_term_rows = await asyncio.to_thread(
-                fetch_recent_mid_term_memories, db_path, character_id, 10
+                fetch_recent_mid_term_memories,
+                db_path,
+                character_id,
+                10,
+                current_day,
             )
             mid_term_text = mid_term_to_text(mid_term_rows)
 
@@ -1599,9 +1623,22 @@ async def lifespan(app: FastAPI):
         app.state.character_setting["voice_id"],
     )
     init_db(cfg["database"]["path"], character_id)
-    app.state.current_day = resolve_current_day(
-        cfg["database"]["path"], character_id
-    )
+    db_path = cfg["database"]["path"]
+    # 起動時は現キャラの回想（recollections）をクリアする。
+    # 前回プロセスで残った想起内容を引きずらず、感情ループ初回でその時点の会話から
+    # 再抽出された結果を改めて入れる運用にする。長期記憶バッチ実行時は通らない。
+    replace_recollections(db_path, character_id, [])
+    logger.info("起動時クリーンアップ: recollections (%s) をクリア", character_id)
+    app.state.current_day = resolve_current_day(db_path, character_id)
+    # 新しい日（現キャラ × 現 Day の messages が0件）なら、
+    # happy / tension / safe を 50 にリセットする。affection は前日のまま維持。
+    if count_messages_after(db_path, character_id, app.state.current_day, 0) == 0:
+        reset_emotions_excluding_affection(db_path, character_id, 50)
+        logger.info(
+            "新しい日と判定 (day=%s): happy/tension/safe を 50 に初期化 "
+            "(affection は維持)",
+            app.state.current_day,
+        )
     app.state.gemini_client = build_gemini_client(cfg["gemini"]["api_key"])
     app.state.model_names = {
         "flash": cfg["gemini"]["flash_model"],

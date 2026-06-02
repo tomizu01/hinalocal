@@ -185,7 +185,7 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 2. `mss` でそのウィンドウ領域をスクリーンショット → PIL.Image に変換
 3. `image.clip` で追加クリップ（ウィンドウ左上原点）→ `image.resize_width` でリサイズ
 4. `captures/processing/<unique>.jpg` として JPEG 保存（生PNGは保持しない）
-5. DBから現キャラ・**現在の Day** の直近30件の会話履歴、および現キャラの直近10件の中期記憶を取得（どちらも古い順に整列）
+5. DBから現キャラ・**現在の Day** の直近30件の会話履歴、および現キャラ・**現在の Day** の直近10件の中期記憶を取得（どちらも古い順に整列）。中期記憶は Day をまたいで引き継がず、過去 Day の出来事は長期記憶（`recollections`）側で参照する設計。
 6. プロンプト構築：
    - **system_instruction**：キャラ設定プロンプト（`character.md`）＋実況応援プロンプト（`config.yaml` で指定された active な game プロンプト）＋現在の感情値ブロックを `---` 区切りで連結
      - 感情値ブロックは `emotions` テーブルから現キャラの `happy` / `tension` / `safe` / `affection` を取得し、`0-100` の数値に定性ラベル（高め / やや高め / 普通 / やや低め / 低め）を付けて整形する
@@ -346,6 +346,7 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 - INDEX `idx_recollections_char` (`character_id`)
 - 感情ループの「キーワード抽出 → `long_term_keywords` 照合 → 上位20件からランダム5件サンプリング」で 60 秒間隔に全件上書きされる
 - 会話生成プロンプトはここに行があるキャラについて、対応する `mid_term_memories` を1行ずつ `ゲーム名：{game_name} 出来事：{summary}` 形式で「関連した過去の出来事」セクションに注入する
+- **`main.py` を通常モード（バッチ以外）で起動するたびに、現キャラのレコードを `init_db` 直後にクリアする**。前回プロセスで残った想起内容を引きずらず、感情ループ初回で改めてその時点の会話から抽出された結果を入れ直す運用。長期記憶バッチ実行時は通らない。
 
 ### `characters` テーブル（キャラクターマスター = 感情の変化差分）
 - `character_id` TEXT PRIMARY KEY  -- A-Za-z 1-16文字
@@ -364,6 +365,7 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 - `affection` INTEGER NOT NULL DEFAULT 50
 - 起動時に `config.character.current_id` のレコードを `INSERT OR IGNORE` で初期化（全値 50）
 - 更新は `apply_emotion_delta` で行い、`MAX(0, MIN(100, value + delta))` でクランプ
+- **新しい日の起動時リセット**：通常モード（バッチ以外）で起動した時、現キャラ × 現 Day の `messages` が0件（＝その Day はまだ開始されていない）なら、`happy` / `tension` / `safe` を **50 に直接セット** する。`affection` は前日の値をそのまま維持（好感度はキャラ関係性の継続値として日をまたぐ）
 
 ### マイグレーション方針
 - 起動時 `init_db` で `PRAGMA table_info(<table>)` を見て、不足カラム（`character_id`, `day`, `last_message_id`, `game_name`）があれば `ALTER TABLE ADD COLUMN` で追加
