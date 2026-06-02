@@ -442,6 +442,52 @@ def fetch_character_master(
     return row
 
 
+def fetch_emotions(db_path: str, character_id: str) -> sqlite3.Row:
+    """現キャラの emotions を取得。レコードがなければ初期値（50）で作成して返す。"""
+    with db_connect(db_path) as conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO emotions (character_id) VALUES (?)",
+            (character_id,),
+        )
+        row = conn.execute(
+            "SELECT happy, tension, safe, affection FROM emotions "
+            "WHERE character_id = ?",
+            (character_id,),
+        ).fetchone()
+        conn.commit()
+    return row
+
+
+def emotion_level_label(value: int) -> str:
+    """0-100 の感情値を定性ラベルに変換。"""
+    if value >= 70:
+        return "高め"
+    if value >= 60:
+        return "やや高め"
+    if value >= 40:
+        return "普通"
+    if value >= 30:
+        return "やや低め"
+    return "低め"
+
+
+def format_emotions_block(emotions: sqlite3.Row) -> str:
+    """emotions 行をプロンプト用のブロック文字列に整形。"""
+    h, t, s, a = (
+        emotions["happy"],
+        emotions["tension"],
+        emotions["safe"],
+        emotions["affection"],
+    )
+    return (
+        "現在の感情値（0-100）：\n"
+        f"  嬉しさ: {h}（{emotion_level_label(h)}）\n"
+        f"  テンション: {t}（{emotion_level_label(t)}）\n"
+        f"  安心感: {s}（{emotion_level_label(s)}）\n"
+        f"  好感度: {a}（{emotion_level_label(a)}）"
+    )
+
+
 def apply_emotion_delta(
     db_path: str,
     character_id: str,
@@ -645,10 +691,10 @@ def call_summarize(
     return text
 
 
-EMOTION_HAPPY_CHOICES = ("嬉しい", "悲しい", "どちらでもない")
-EMOTION_TENSION_CHOICES = ("上がる", "下がる", "どちらでもない")
-EMOTION_SAFE_CHOICES = ("安心", "不安", "どちらでもない")
-AFFECTION_CHOICES = ("上がる", "下がる", "どちらでもない")
+EMOTION_HAPPY_CHOICES = ("すごく嬉しい", "嬉しい", "普通")
+EMOTION_TENSION_CHOICES = ("すごく上がる", "上がる", "上がらない")
+EMOTION_SAFE_CHOICES = ("すごく安心", "安心", "普通")
+AFFECTION_CHOICES = ("すごく上がる", "上がる", "上がらない")
 
 
 def _emotion_schema() -> dict:
@@ -689,14 +735,14 @@ def call_emotion_judge(
         f"{history_text}\n\n"
         "この会話履歴から、プレイヤーの感情の変化を推測して、"
         "下記の選択肢から選択してください。\n\n"
-        "嬉しさの変化: 嬉しい / 悲しい / どちらでもない\n"
-        "テンションの変化: 上がる / 下がる / どちらでもない\n"
-        "安心感の変化: 安心 / 不安 / どちらでもない\n\n"
+        "嬉しさの変化: すごく嬉しい / 嬉しい / 普通\n"
+        "テンションの変化: すごく上がる / 上がる / 上がらない\n"
+        "安心感の変化: すごく安心 / 安心 / 普通\n\n"
         "必ず以下のキーを持つ JSON を返してください。"
         "値は各選択肢のいずれか1つの文字列のみ:\n"
-        '{"happy": "<嬉しい|悲しい|どちらでもない>", '
-        '"tension": "<上がる|下がる|どちらでもない>", '
-        '"safe": "<安心|不安|どちらでもない>"}'
+        '{"happy": "<すごく嬉しい|嬉しい|普通>", '
+        '"tension": "<すごく上がる|上がる|上がらない>", '
+        '"safe": "<すごく安心|安心|普通>"}'
     )
     response = client.models.generate_content(
         model=model,
@@ -741,10 +787,10 @@ def call_affection_judge(
         f"{memory_text}\n\n"
         "この内容から、プレイヤーへの好感度の変化を推測して、"
         "下記の選択肢から選択してください。\n\n"
-        "好感度: 上がる / 下がる / どちらでもない\n\n"
+        "好感度: すごく上がる / 上がる / 上がらない\n\n"
         "必ず以下のキーを持つ JSON を返してください。"
         "値は選択肢のいずれか1つの文字列のみ:\n"
-        '{"affection": "<上がる|下がる|どちらでもない>"}'
+        '{"affection": "<すごく上がる|上がる|上がらない>"}'
     )
     response = client.models.generate_content(
         model=model,
@@ -781,9 +827,12 @@ def call_gemini(
     history_text: str,
     mid_term_text: str,
     mission_text: str,
+    emotions_text: str,
     image_path: Path,
 ) -> str:
-    system_instruction = f"{character_prompt}\n\n---\n\n{cheer_prompt}"
+    system_instruction = (
+        f"{character_prompt}\n\n---\n\n{cheer_prompt}\n\n---\n\n{emotions_text}"
+    )
     history_block = history_text if history_text else "（まだ会話履歴はありません）"
     mid_term_block = mid_term_text if mid_term_text else "（まだプレイ概要はありません）"
     mission_block = (
@@ -891,6 +940,11 @@ async def main_loop(app: FastAPI) -> None:
                 fetch_mission, db_path, character_id, current_day
             )
 
+            emotions_row = await asyncio.to_thread(
+                fetch_emotions, db_path, character_id
+            )
+            emotions_text = format_emotions_block(emotions_row)
+
             tier = app.state.model_tier
             model = app.state.model_names[tier]
             try:
@@ -903,6 +957,7 @@ async def main_loop(app: FastAPI) -> None:
                     history_text,
                     mid_term_text,
                     mission_text,
+                    emotions_text,
                     processed,
                 )
             except Exception:
@@ -1069,9 +1124,9 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
                         if ares is not None:
                             a_delta = master["affection_delta"]
                             choice = ares.get("affection")
-                            if choice == "上がる":
+                            if choice == "すごく上がる":
                                 da = a_delta
-                            elif choice == "下がる":
+                            elif choice == "上がらない":
                                 da = -a_delta
                             else:
                                 da = 0
@@ -1168,21 +1223,21 @@ async def emotion_loop(app: FastAPI) -> None:
                         h_choice = result.get("happy")
                         t_choice = result.get("tension")
                         s_choice = result.get("safe")
-                        if h_choice == "嬉しい":
+                        if h_choice == "すごく嬉しい":
                             dh = h_delta
-                        elif h_choice == "悲しい":
+                        elif h_choice == "普通":
                             dh = -h_delta
                         else:
                             dh = 0
-                        if t_choice == "上がる":
+                        if t_choice == "すごく上がる":
                             dt = t_delta
-                        elif t_choice == "下がる":
+                        elif t_choice == "上がらない":
                             dt = -t_delta
                         else:
                             dt = 0
-                        if s_choice == "安心":
+                        if s_choice == "すごく安心":
                             ds = s_delta
-                        elif s_choice == "不安":
+                        elif s_choice == "普通":
                             ds = -s_delta
                         else:
                             ds = 0
