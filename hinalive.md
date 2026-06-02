@@ -127,6 +127,11 @@ hinalive/
 - `--day <整数>` … プレイ日 (Day) を整数で指定（`1` のような連番でも `20260513` のような日付運用でも可）。
   - 未指定時は、現キャラの `messages` で最新 `created_at` の行の `day` を取得して **継続**
   - 履歴が1件もなければ `1` で新規開始
+- `--longterm-batch` … 長期記憶バッチを実行して終了する。`--char_id` と `--day` の併用が必須。
+  - 指定キャラ・指定 Day の中期記憶を1件ずつ Gemini（flash 固定）に投げて
+    キーワード（1つ以上）と印象度（1-5）を抽出し、`long_term_keywords` テーブルに保存する
+  - すでに同じ `mid_term_memory_id` でキーワードが入っている場合はスキップ（再実行安全）
+  - 例：`python backend\main.py --longterm-batch --char_id hina --day 1`
 
 ## frontend/config.js
 - ElevenLabs APIキー
@@ -205,11 +210,36 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
    - `latest = MAX(messages.id WHERE character_id=current AND day=current_day)` を取得（＝今回の対象レコードのうち最大 id）
    - 現キャラ・現 Day の直近 `window_size` 件（既定 30件）の会話履歴を取得
    - `prompts/summary.md` テンプレートを `{target_chars}` `{history_text}` `{game_name}` で埋めてプロンプト化
-   - flash モデルで要約 → `mid_term_memories` テーブルに `(character_id, summary, day=current_day, last_message_id=latest)` を追加
+   - flash モデルで要約 → `mid_term_memories` テーブルに `(character_id, summary, day=current_day, last_message_id=latest, game_name=config.yaml の game.name)` を追加
    - **続けて好感度判定**：保存した `summary` を `{memory_text}` として `call_affection_judge` を呼び、`emotions.affection` に `±affection_delta` を反映（0-100 クランプ）。Gemini 呼び出しの頻度を要約と独立に変える可能性があるため、要約と1回にまとめず別途呼び出す
 5. `interval_seconds`（既定 10秒）待ってループ先頭へ戻る
 
 ※ 中期記憶はメインループの会話生成プロンプトに **「ここまでのプレイの概要（古い順）」** として注入される（直近10件、古い順）。
+
+## 長期記憶バッチ（CLI 実行）
+
+長期記憶は、中期記憶にキーワードを紐付けることで後で検索・想起できるようにする仕組み。
+**Day が終わったタイミングで手動 or 別バッチから CLI コマンドで実行する**。バックグラウンドループでは走らせない。
+
+起動コマンド：
+```
+python backend\main.py --longterm-batch --char_id <ID> --day <整数>
+```
+
+判定モデルは **flash 固定**。処理内容：
+
+1. 指定 `char_id` と `day` で `mid_term_memories` の全行を古い順に取得する
+2. 各行を1件ずつ処理：
+   - すでに `long_term_keywords.mid_term_memory_id` にレコードがあればスキップ（再実行安全）
+   - Gemini に `mid_term_memories.summary` を投げて、以下を抽出してもらう：
+     - **キーワード**：1つ以上（複数可）。固有名詞・行動・感情・トピックなど、後で検索に使える短い単語句
+     - **印象度**：その出来事がキャラにとってどれだけ印象深いかを 1〜5 の整数で評価
+   - 出力は `response_mime_type=application/json` + `response_schema` で次の JSON に強制：
+     - `{"keywords": ["<キーワード>", ...], "impression": <1-5>}`
+   - プロンプトに埋め込む `game_name` は `mid_term_memories.game_name`、NULL なら現行 `config.yaml` の `game.name` をフォールバックとして使う
+3. 抽出したキーワード1つにつき1行、`long_term_keywords` に `(character_id, keyword, mid_term_memory_id, impression)` を挿入する（同じ中期記憶に紐づく全行で `impression` は同値）
+
+長期記憶を **思い出す** ロジック（プレイ中にキーワード検索して関連 mid_term を呼び出し、生成プロンプトに注入する処理）は本フェーズの対象外。
 
 ## 感情ループ
 
@@ -288,8 +318,21 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 - `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 - `day` INTEGER  -- 要約を作った時点のプレイ日。既存 NULL 行は 1 で backfill
 - `last_message_id` INTEGER  -- この要約に取り込んだ `messages.id` の最大値（次回バッチ判定の基準）。既存 NULL 行は 0 で backfill
+- `game_name` TEXT  -- 要約を作った時点の `config.yaml` の `game.name`。長期記憶バッチで使用。既存 NULL 行は backfill しない（読み出し時に現行 `game.name` をフォールバックとして利用）
 - INDEX `idx_mid_term_char` (`character_id`, `id` DESC)
 - INDEX `idx_mid_term_char_day` (`character_id`, `day`, `id` DESC)
+
+### `long_term_keywords` テーブル（長期記憶 = 中期記憶への検索キーワード）
+- `id` INTEGER PRIMARY KEY AUTOINCREMENT
+- `character_id` TEXT NOT NULL  -- どのキャラの記憶か
+- `keyword` TEXT NOT NULL  -- 関連づけるキーワード（短い単語句）。1つの中期記憶に対し複数行入る
+- `mid_term_memory_id` INTEGER NOT NULL  -- 紐づく `mid_term_memories.id`
+- `impression` INTEGER NOT NULL  -- 印象度 1（薄い）〜 5（強い）。同じ中期記憶に紐づく全行で同値
+- `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+- INDEX `idx_long_term_char_keyword` (`character_id`, `keyword`)
+- INDEX `idx_long_term_mid_term` (`mid_term_memory_id`)
+
+長期記憶を **思い出す**（キーワード照合 → 関連 mid_term_memory を引いて生成プロンプトに注入する）ロジックは別途実装する。
 
 ### `characters` テーブル（キャラクターマスター = 感情の変化差分）
 - `character_id` TEXT PRIMARY KEY  -- A-Za-z 1-16文字
@@ -310,13 +353,14 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
 - 更新は `apply_emotion_delta` で行い、`MAX(0, MIN(100, value + delta))` でクランプ
 
 ### マイグレーション方針
-- 起動時 `init_db` で `PRAGMA table_info(<table>)` を見て、不足カラム（`character_id`, `day`, `last_message_id`）があれば `ALTER TABLE ADD COLUMN` で追加
+- 起動時 `init_db` で `PRAGMA table_info(<table>)` を見て、不足カラム（`character_id`, `day`, `last_message_id`, `game_name`）があれば `ALTER TABLE ADD COLUMN` で追加
 - 既存行は以下の規則で backfill：
   - `messages.character_id IS NULL` → `config.character.current_id`
   - `messages.day IS NULL` → `1`
   - `mid_term_memories.day IS NULL` → `1`
   - `mid_term_memories.last_message_id IS NULL` → `0`
-- `characters` / `emotions` テーブルは `CREATE TABLE IF NOT EXISTS` で初回作成し、`INSERT OR IGNORE` で初期行を投入する（追加カラム無し）
+  - `mid_term_memories.game_name` … **backfill しない**（NULL のまま残す。長期記憶バッチは読み出し時に現行 `config.yaml` の `game.name` をフォールバックとして使う）
+- `characters` / `emotions` / `long_term_keywords` テーブルは `CREATE TABLE IF NOT EXISTS` で初回作成（`characters` / `emotions` は `INSERT OR IGNORE` で初期行を投入。`long_term_keywords` は初期行なし）
 - 上記は冪等で、再起動を繰り返しても副作用なし
 
 # フロントエンド仕様
@@ -399,8 +443,8 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1
 | キャラクター管理 | `character.current_id`（A-Za-z 1-16文字、`--char_id` で上書き可）で識別。`backend/characters/<id>/` にプロンプト・setting.yaml、`frontend/images/<id>/` に立ち絵を配置。会話履歴・記憶テーブルもこのIDで分離 |
 | Day（プレイ日） | 整数。`--day` で指定、未指定なら現キャラの最新履歴の day を継続、無ければ 1。`messages` / `mid_term_memories` の挿入時に必ず書き込み、生成プロンプトの履歴取得は現 Day で絞り込み |
 | デイミッション | `missions` テーブル（`character_id` × `day` で1件）。フロントから GET/PUT で編集。生成プロンプトにも注入 |
-| 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加）。長期は未実装 |
-| 要約モデル | 中期記憶バッチは常に flash 固定 |
+| 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加。`game_name` カラムを持つ）／長期=`long_term_keywords`（中期記憶にキーワード＋印象度1-5を紐付け。Day 終了後に CLI `--longterm-batch` で生成。想起ロジックは未実装） |
+| 要約モデル | 中期記憶バッチ・長期記憶バッチとも常に flash 固定 |
 | 感情値 | `emotions`（happy/tension/safe/affection、0-100、default 50）。差分は `characters` マスター（hina 初期値=各 5）。happy/tension/safe は 60 秒間隔の感情ループで判定、affection は中期記憶挿入直後に判定。判定モデルは flash 固定で JSON 強制出力 |
 | テキスト/音声同期 | 同時開始のみ、末尾ズレ許容（7文字/s 固定） |
 | 再生済フラグ | 取得時に即立てる（取りこぼし許容） |

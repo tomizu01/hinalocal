@@ -192,6 +192,10 @@ def init_db(db_path: str, default_character_id: str) -> None:
                 "mid_term_memories.last_message_id を %d 行 backfill (=0)",
                 cur.rowcount,
             )
+        # mid_term_memories.game_name カラム（過去の行は NULL のまま）
+        if not _column_exists(conn, "mid_term_memories", "game_name"):
+            conn.execute("ALTER TABLE mid_term_memories ADD COLUMN game_name TEXT")
+            logger.info("mid_term_memories.game_name カラムを追加しました")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mid_term_char "
             "ON mid_term_memories(character_id, id DESC)"
@@ -199,6 +203,28 @@ def init_db(db_path: str, default_character_id: str) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_mid_term_char_day "
             "ON mid_term_memories(character_id, day, id DESC)"
+        )
+
+        # 長期記憶キーワード関連テーブル
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS long_term_keywords (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                character_id TEXT NOT NULL,
+                keyword TEXT NOT NULL,
+                mid_term_memory_id INTEGER NOT NULL,
+                impression INTEGER NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_long_term_char_keyword "
+            "ON long_term_keywords(character_id, keyword)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_long_term_mid_term "
+            "ON long_term_keywords(mid_term_memory_id)"
         )
 
         # キャラクターマスター（感情変化の差分を保持）
@@ -386,12 +412,55 @@ def insert_mid_term_memory(
     summary: str,
     day: int,
     last_message_id: int,
+    game_name: str,
 ) -> int:
     with db_connect(db_path) as conn:
         cur = conn.execute(
             "INSERT INTO mid_term_memories "
-            "(character_id, summary, day, last_message_id) VALUES (?, ?, ?, ?)",
-            (character_id, summary, day, last_message_id),
+            "(character_id, summary, day, last_message_id, game_name) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (character_id, summary, day, last_message_id, game_name),
+        )
+        conn.commit()
+        return cur.lastrowid
+
+
+def fetch_mid_term_memories_by_day(
+    db_path: str, character_id: str, day: int
+) -> list[sqlite3.Row]:
+    """指定キャラ・day の中期記憶を古い順で全件取得。"""
+    with db_connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT id, summary, game_name, day FROM mid_term_memories "
+            "WHERE character_id = ? AND day = ? ORDER BY id ASC",
+            (character_id, day),
+        ).fetchall()
+    return list(rows)
+
+
+def has_long_term_keywords(db_path: str, mid_term_memory_id: int) -> bool:
+    """指定の中期記憶 id にすでに長期記憶キーワードが紐付いているかどうか。"""
+    with db_connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM long_term_keywords WHERE mid_term_memory_id = ? LIMIT 1",
+            (mid_term_memory_id,),
+        ).fetchone()
+    return row is not None
+
+
+def insert_long_term_keyword(
+    db_path: str,
+    character_id: str,
+    keyword: str,
+    mid_term_memory_id: int,
+    impression: int,
+) -> int:
+    with db_connect(db_path) as conn:
+        cur = conn.execute(
+            "INSERT INTO long_term_keywords "
+            "(character_id, keyword, mid_term_memory_id, impression) "
+            "VALUES (?, ?, ?, ?)",
+            (character_id, keyword, mid_term_memory_id, impression),
         )
         conn.commit()
         return cur.lastrowid
@@ -819,6 +888,82 @@ def call_affection_judge(
     return data
 
 
+def _long_term_schema() -> dict:
+    return {
+        "type": "OBJECT",
+        "properties": {
+            "keywords": {
+                "type": "ARRAY",
+                "items": {"type": "STRING"},
+            },
+            "impression": {"type": "INTEGER"},
+        },
+        "required": ["keywords", "impression"],
+    }
+
+
+def call_long_term_extract(
+    client: genai.Client,
+    model: str,
+    game_name: str,
+    char_name: str,
+    summary_text: str,
+) -> dict[str, Any] | None:
+    """中期記憶の要約からキーワード（1つ以上）と印象度（1-5）を抽出。失敗時 None。"""
+    prompt = (
+        f'現在、ゲーム"{game_name}"で、ゲームプレイヤーとAIキャラクター'
+        f"{char_name}が会話しながらプレイしました。\n\n"
+        f"以下は、その間に起きた出来事の要約です。\n\n"
+        "[出来事の要約]\n"
+        f"{summary_text}\n\n"
+        "この要約から、後で思い出すためのキーワードを1つ以上（複数可）抽出してください。"
+        "キーワードは固有名詞・行動・感情・トピックなど、検索に使える短い単語句にしてください。\n"
+        "また、この出来事がキャラクターにとってどれくらい印象深いかを"
+        "1（ほとんど印象に残らない）〜5（強く印象に残る）の整数で評価してください。\n\n"
+        "必ず以下のキーを持つ JSON を返してください:\n"
+        '{"keywords": ["<キーワード1>", "<キーワード2>", ...], "impression": <1-5の整数>}'
+    )
+    response = client.models.generate_content(
+        model=model,
+        contents=[
+            genai_types.Content(
+                role="user",
+                parts=[genai_types.Part.from_text(text=prompt)],
+            )
+        ],
+        config=genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=_long_term_schema(),
+        ),
+    )
+    text = (response.text or "").strip()
+    if not text:
+        log_empty_gemini_response("long_term_extract", model, response)
+        return None
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        logger.warning("長期記憶抽出の JSON パース失敗: %r", text[:200])
+        return None
+    if not isinstance(data, dict):
+        return None
+    keywords = data.get("keywords")
+    impression = data.get("impression")
+    if not isinstance(keywords, list) or not keywords:
+        logger.warning("長期記憶抽出: keywords が不正: %r", keywords)
+        return None
+    keywords = [str(k).strip() for k in keywords if str(k).strip()]
+    if not keywords:
+        return None
+    try:
+        impression = int(impression)
+    except (TypeError, ValueError):
+        logger.warning("長期記憶抽出: impression が不正: %r", impression)
+        return None
+    impression = max(1, min(5, impression))
+    return {"keywords": keywords, "impression": impression}
+
+
 def call_gemini(
     client: genai.Client,
     model: str,
@@ -1090,11 +1235,13 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
                         summary,
                         current_day,
                         latest,
+                        game_name,
                     )
                     logger.info(
-                        "中期記憶を保存 (day=%s, last_message_id=%d): %s",
+                        "中期記憶を保存 (day=%s, last_message_id=%d, game=%s): %s",
                         current_day,
                         latest,
+                        game_name,
                         summary[:60],
                     )
                     # 続いて好感度の変化を判定（独立して呼び出す。
@@ -1466,6 +1613,92 @@ FRONTEND_DIR = Path(__file__).parent.parent / "frontend"
 app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="frontend")
 
 
+def run_long_term_batch(char_id: str, day: int) -> None:
+    """長期記憶バッチ：指定キャラ・day の中期記憶を 1 件ずつ Gemini に投げて
+    キーワード（1つ以上）と印象度（1-5）を抽出し、long_term_keywords に挿入する。
+    すでに同じ mid_term_memory_id でキーワードが入っている場合はスキップ（再実行安全）。
+    """
+    validate_character_id(char_id)
+    cfg = load_config()
+    db_path = cfg["database"]["path"]
+    init_db(db_path, char_id)
+
+    char_setting = load_character_setting(char_id)
+    char_name = char_setting["name"]
+    fallback_game_name = cfg["game"]["name"]
+
+    client = build_gemini_client(cfg["gemini"]["api_key"])
+    model = cfg["gemini"]["flash_model"]
+
+    rows = fetch_mid_term_memories_by_day(db_path, char_id, day)
+    if not rows:
+        logger.info(
+            "長期記憶バッチ: 対象の中期記憶がありません (character=%s day=%d)",
+            char_id,
+            day,
+        )
+        return
+
+    logger.info(
+        "長期記憶バッチ開始: character=%s day=%d 対象=%d件 model=%s",
+        char_id,
+        day,
+        len(rows),
+        model,
+    )
+
+    processed = 0
+    skipped = 0
+    failed = 0
+    for row in rows:
+        mid_term_id = row["id"]
+        if has_long_term_keywords(db_path, mid_term_id):
+            logger.info(
+                "長期記憶バッチ: mid_term_id=%d はすでに処理済み、スキップ",
+                mid_term_id,
+            )
+            skipped += 1
+            continue
+
+        game_name = row["game_name"] or fallback_game_name
+
+        try:
+            result = call_long_term_extract(
+                client, model, game_name, char_name, row["summary"]
+            )
+        except Exception:
+            logger.exception(
+                "長期記憶抽出の Gemini 呼び出しに失敗 (mid_term_id=%d)",
+                mid_term_id,
+            )
+            failed += 1
+            continue
+
+        if result is None:
+            failed += 1
+            continue
+
+        keywords = result["keywords"]
+        impression = result["impression"]
+        for kw in keywords:
+            insert_long_term_keyword(db_path, char_id, kw, mid_term_id, impression)
+
+        logger.info(
+            "長期記憶を追加: mid_term_id=%d impression=%d keywords=%s",
+            mid_term_id,
+            impression,
+            keywords,
+        )
+        processed += 1
+
+    logger.info(
+        "長期記憶バッチ完了: processed=%d skipped=%d failed=%d",
+        processed,
+        skipped,
+        failed,
+    )
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="hinalive backend")
     parser.add_argument(
@@ -1488,6 +1721,13 @@ if __name__ == "__main__":
         help="プレイ日 (Day) を整数で指定。1, 20260513 などどちらの運用も可。"
         "未指定時は直近履歴の day を継続、履歴が無ければ 1",
     )
+    parser.add_argument(
+        "--longterm-batch",
+        action="store_true",
+        help="長期記憶バッチを実行して終了する。--char_id と --day の併用が必須。"
+        "指定された char_id と day に紐づく中期記憶からキーワードと印象度を抽出し、"
+        "long_term_keywords テーブルに保存する。",
+    )
     args = parser.parse_args()
     if args.char_id:
         os.environ["HINALIVE_CHAR_ID"] = args.char_id
@@ -1497,6 +1737,14 @@ if __name__ == "__main__":
         os.environ["HINALIVE_WINDOW_TITLE"] = args.window
     if args.day is not None:
         os.environ["HINALIVE_DAY"] = str(args.day)
+
+    if args.longterm_batch:
+        if not args.char_id:
+            parser.error("--longterm-batch には --char_id が必須です")
+        if args.day is None:
+            parser.error("--longterm-batch には --day が必須です")
+        run_long_term_batch(args.char_id, args.day)
+        raise SystemExit(0)
 
     import uvicorn
 
