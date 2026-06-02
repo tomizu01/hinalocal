@@ -22,7 +22,8 @@
       "PowerShell(& \"C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe\" -c \"import sys; sys.path.insert\\(0, r'C:\\\\hinalive\\\\backend'\\); from main import _emotion_schema, _affection_schema; from google.genai._transformers import t_schema; print\\(t_schema\\(None, _emotion_schema\\(\\)\\)\\); print\\(t_schema\\(None, _affection_schema\\(\\)\\)\\)\")",
       "Read(//c/Users/tomi/.claude/projects/C--hinalive/**)",
       "Read(//c/Users/tomi/.claude/projects//**)",
-      "Bash(/c/hinalive/backend/venv/Scripts/python.exe main.py --help)"
+      "Bash(/c/hinalive/backend/venv/Scripts/python.exe main.py --help)",
+      "Bash(/c/hinalive/backend/venv/Scripts/python.exe -m py_compile /c/hinalive/backend/main.py)"
     ]
   }
 }

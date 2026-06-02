@@ -193,6 +193,7 @@ DB操作（会話履歴・各種記憶テーブル）はすべて `character.cur
      - 「本日のミッション：」：現キャラ・現 Day の `missions.content`（未設定時はブロックごと省略）
      - 「直近の会話履歴（古い順）」：`AI: ～` / `プレイヤー: ～` の繰り返し形式
      - 「ここまでのプレイの概要（古い順）」：中期記憶の要約を段落区切りで列挙
+     - 「関連した過去の出来事：」：`recollections` テーブルに該当キャラのレコードがある場合のみ追加。`mid_term_memories` を `id` 古い順に引き、1行ずつ `ゲーム名：{game_name} 出来事：{summary}` 形式で列挙する（複数ゲームにまたがり得るため `game_name` を明記。`game_name` が NULL の古い行は `（不明）` に置換）。レコードが無い場合はブロックごと省略
      - 最新キャプチャ画像1枚を添付（履歴に画像は含めない）
 7. Gemini API に投げて、実況・応援メッセージを生成
 8. 生成されたメッセージをDBに保存（`character_id`=現キャラ、`speaker="ai"`、未再生フラグ=未再生）
@@ -244,16 +245,23 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 ## 感情ループ
 
 感情値のうち `happy` / `tension` / `safe` の更新を 60 秒間隔で行う独立ループ。`affection` は本ループでは扱わず、中期記憶ループ側で更新する。判定モデルは flash 固定。
+**長期記憶の想起（回想テーブル更新）も本ループに相乗りする** ことで、感情判定と同じ会話履歴範囲・同じ Gemini 呼び出し1回で済ませる。
 
 1. `characters` マスターから現キャラの delta 値を取得（未登録なら警告ログを出してスキップ）
 2. 現キャラ・現 Day の直近 30 件の会話履歴を取得（履歴ゼロならスキップ）
 3. 履歴と `game_name` / `char_name` を埋め込んで `call_emotion_judge` を呼ぶ。出力は `response_mime_type=application/json` + `response_schema` で次のJSONに強制：
-   - `{"happy": "すごく嬉しい|嬉しい|普通", "tension": "すごく上がる|上がる|上がらない", "safe": "すごく安心|安心|普通"}`
+   - `{"happy": "すごく嬉しい|嬉しい|普通", "tension": "すごく上がる|上がる|上がらない", "safe": "すごく安心|安心|普通", "keywords": ["<キーワード1>", ...]}`
+   - `keywords` は会話履歴から抽出した1つ以上の検索用短い単語句（固有名詞・行動・感情・トピック等）
 4. 返却値に応じて `emotions` を加減算（0-100 にクランプ）。判定基準が甘くなりがちで常に上がり続けるのを防ぐため、中位の選択肢を 0、下位の選択肢を `-delta` に割り当てている：
    - すごく嬉しい / すごく上がる / すごく安心 → `+delta`
    - 嬉しい / 上がる / 安心 → 変化なし（0）
    - 普通 / 上がらない / 普通 → `-delta`
-5. 60 秒待ってループ先頭へ戻る
+5. **長期記憶の想起**：抽出した `keywords` を使って `recollections` テーブルを置き換える：
+   - `long_term_keywords` から `character_id` 一致・`keyword IN (抽出語...)` の行を `mid_term_memory_id` で集約（`impression` は `MAX` を取る）
+   - `impression` 降順で上位 20 件を取り出し、その中から **ランダムに最大 5 件** サンプリング（候補が 5 件未満ならその全件）
+   - `recollections` の同 `character_id` 行を一旦全削除してから、選んだ `mid_term_memory_id` を全件挿入する（原子的に上書き）
+   - `keywords` が空ならスキップ（前回の `recollections` を保持）
+6. 60 秒待ってループ先頭へ戻る
 
 好感度（affection）も同様の3段階で判定し、`すごく上がる` → `+delta`、`上がる` → 0、`上がらない` → `-delta` を `emotions.affection` に反映する。
 
@@ -332,7 +340,12 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 - INDEX `idx_long_term_char_keyword` (`character_id`, `keyword`)
 - INDEX `idx_long_term_mid_term` (`mid_term_memory_id`)
 
-長期記憶を **思い出す**（キーワード照合 → 関連 mid_term_memory を引いて生成プロンプトに注入する）ロジックは別途実装する。
+### `recollections` テーブル（回想 = 現在キャラが想起中の長期記憶）
+- `character_id` TEXT NOT NULL  -- どのキャラの回想か
+- `mid_term_memory_id` INTEGER NOT NULL  -- 想起対象の `mid_term_memories.id`
+- INDEX `idx_recollections_char` (`character_id`)
+- 感情ループの「キーワード抽出 → `long_term_keywords` 照合 → 上位20件からランダム5件サンプリング」で 60 秒間隔に全件上書きされる
+- 会話生成プロンプトはここに行があるキャラについて、対応する `mid_term_memories` を1行ずつ `ゲーム名：{game_name} 出来事：{summary}` 形式で「関連した過去の出来事」セクションに注入する
 
 ### `characters` テーブル（キャラクターマスター = 感情の変化差分）
 - `character_id` TEXT PRIMARY KEY  -- A-Za-z 1-16文字
@@ -360,7 +373,7 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
   - `mid_term_memories.day IS NULL` → `1`
   - `mid_term_memories.last_message_id IS NULL` → `0`
   - `mid_term_memories.game_name` … **backfill しない**（NULL のまま残す。長期記憶バッチは読み出し時に現行 `config.yaml` の `game.name` をフォールバックとして使う）
-- `characters` / `emotions` / `long_term_keywords` テーブルは `CREATE TABLE IF NOT EXISTS` で初回作成（`characters` / `emotions` は `INSERT OR IGNORE` で初期行を投入。`long_term_keywords` は初期行なし）
+- `characters` / `emotions` / `long_term_keywords` / `recollections` テーブルは `CREATE TABLE IF NOT EXISTS` で初回作成（`characters` / `emotions` は `INSERT OR IGNORE` で初期行を投入。`long_term_keywords` / `recollections` は初期行なし）
 - 上記は冪等で、再起動を繰り返しても副作用なし
 
 # フロントエンド仕様
@@ -443,7 +456,7 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalive/` 1
 | キャラクター管理 | `character.current_id`（A-Za-z 1-16文字、`--char_id` で上書き可）で識別。`backend/characters/<id>/` にプロンプト・setting.yaml、`frontend/images/<id>/` に立ち絵を配置。会話履歴・記憶テーブルもこのIDで分離 |
 | Day（プレイ日） | 整数。`--day` で指定、未指定なら現キャラの最新履歴の day を継続、無ければ 1。`messages` / `mid_term_memories` の挿入時に必ず書き込み、生成プロンプトの履歴取得は現 Day で絞り込み |
 | デイミッション | `missions` テーブル（`character_id` × `day` で1件）。フロントから GET/PUT で編集。生成プロンプトにも注入 |
-| 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加。`game_name` カラムを持つ）／長期=`long_term_keywords`（中期記憶にキーワード＋印象度1-5を紐付け。Day 終了後に CLI `--longterm-batch` で生成。想起ロジックは未実装） |
+| 記憶レイヤー | 短期=`messages`（生ログ）／中期=`mid_term_memories`（現 Day の直近30件を100文字要約、現 Day で新規20件溜まったら追加。`game_name` カラムを持つ）／長期=`long_term_keywords`（中期記憶にキーワード＋印象度1-5を紐付け。Day 終了後に CLI `--longterm-batch` で生成）／回想=`recollections`（感情ループでキーワード抽出 → 長期記憶上位20件からランダム5件を選んで上書き。生成プロンプトに「関連した過去の出来事」として注入） |
 | 要約モデル | 中期記憶バッチ・長期記憶バッチとも常に flash 固定 |
 | 感情値 | `emotions`（happy/tension/safe/affection、0-100、default 50）。差分は `characters` マスター（hina 初期値=各 5）。happy/tension/safe は 60 秒間隔の感情ループで判定、affection は中期記憶挿入直後に判定。判定モデルは flash 固定で JSON 強制出力 |
 | テキスト/音声同期 | 同時開始のみ、末尾ズレ許容（7文字/s 固定） |

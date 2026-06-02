@@ -5,6 +5,7 @@ import asyncio
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
 import time
@@ -225,6 +226,21 @@ def init_db(db_path: str, default_character_id: str) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_long_term_mid_term "
             "ON long_term_keywords(mid_term_memory_id)"
+        )
+
+        # 回想テーブル（現在 character ごとに想起中の長期記憶 mid_term_memory_id を保持）
+        # 感情ループでキーワード抽出 → 該当する長期記憶から最大5件を選んで上書きする運用
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS recollections (
+                character_id TEXT NOT NULL,
+                mid_term_memory_id INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_recollections_char "
+            "ON recollections(character_id)"
         )
 
         # キャラクターマスター（感情変化の差分を保持）
@@ -464,6 +480,72 @@ def insert_long_term_keyword(
         )
         conn.commit()
         return cur.lastrowid
+
+
+def fetch_long_term_candidates(
+    db_path: str, character_id: str, keywords: list[str], top_n: int
+) -> list[int]:
+    """指定キャラ・キーワード列にマッチする長期記憶 mid_term_memory_id を
+    印象度（同じ mid_term に複数キーワードが紐づくので MAX を取る）降順で上位 top_n 件返す。
+    """
+    if not keywords:
+        return []
+    placeholders = ",".join("?" for _ in keywords)
+    with db_connect(db_path) as conn:
+        rows = conn.execute(
+            f"SELECT mid_term_memory_id, MAX(impression) AS impression "
+            f"FROM long_term_keywords "
+            f"WHERE character_id = ? AND keyword IN ({placeholders}) "
+            f"GROUP BY mid_term_memory_id "
+            f"ORDER BY impression DESC, mid_term_memory_id DESC "
+            f"LIMIT ?",
+            (character_id, *keywords, top_n),
+        ).fetchall()
+    return [r["mid_term_memory_id"] for r in rows]
+
+
+def replace_recollections(
+    db_path: str, character_id: str, mid_term_memory_ids: list[int]
+) -> None:
+    """指定キャラの recollections を一旦全削除してから受け取った id 群を全件挿入。
+    トランザクションで原子的に行う。"""
+    with db_connect(db_path) as conn:
+        conn.execute(
+            "DELETE FROM recollections WHERE character_id = ?", (character_id,)
+        )
+        if mid_term_memory_ids:
+            conn.executemany(
+                "INSERT INTO recollections (character_id, mid_term_memory_id) "
+                "VALUES (?, ?)",
+                [(character_id, mid_id) for mid_id in mid_term_memory_ids],
+            )
+        conn.commit()
+
+
+def fetch_recollection_summaries(
+    db_path: str, character_id: str
+) -> list[sqlite3.Row]:
+    """recollections から該当キャラの mid_term_memories.summary / game_name を
+    id 古い順で取得。game_name は NULL になりうる（古い行）。"""
+    with db_connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT m.summary, m.game_name FROM recollections r "
+            "JOIN mid_term_memories m ON r.mid_term_memory_id = m.id "
+            "WHERE r.character_id = ? "
+            "ORDER BY m.id ASC",
+            (character_id,),
+        ).fetchall()
+    return list(rows)
+
+
+def format_recollections_text(rows: list[sqlite3.Row]) -> str:
+    """回想行を「ゲーム名：{game_name} 出来事：{summary}」形式で1行ずつ連結。
+    `game_name` が NULL の古い行は「（不明）」とする。"""
+    lines = []
+    for r in rows:
+        game = r["game_name"] if r["game_name"] else "（不明）"
+        lines.append(f"ゲーム名：{game} 出来事：{r['summary']}")
+    return "\n".join(lines)
 
 
 def fetch_mission(db_path: str, character_id: str, day: int) -> str:
@@ -773,8 +855,9 @@ def _emotion_schema() -> dict:
             "happy": {"type": "STRING", "enum": list(EMOTION_HAPPY_CHOICES)},
             "tension": {"type": "STRING", "enum": list(EMOTION_TENSION_CHOICES)},
             "safe": {"type": "STRING", "enum": list(EMOTION_SAFE_CHOICES)},
+            "keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
         },
-        "required": ["happy", "tension", "safe"],
+        "required": ["happy", "tension", "safe", "keywords"],
     }
 
 
@@ -795,23 +878,27 @@ def call_emotion_judge(
     char_name: str,
     history_text: str,
 ) -> dict[str, str] | None:
-    """直近会話から happy / tension / safe の変化を判定。失敗時 None。"""
+    """直近会話から happy / tension / safe の変化を判定。失敗時 None。
+    あわせて会話履歴からキーワード（1つ以上、複数）も抽出して返す。"""
     prompt = (
         f'現在、ゲーム"{game_name}"で、ゲームプレイヤーとAIキャラクター'
         f"{char_name}が会話しながらプレイ中です。\n\n"
         f"以下は、{char_name}とゲームプレイヤーの直近の会話履歴です。\n\n"
         "[会話履歴]\n"
         f"{history_text}\n\n"
-        "この会話履歴から、プレイヤーの感情の変化を推測して、"
-        "下記の選択肢から選択してください。\n\n"
+        "この会話履歴について、以下を判定・抽出してください。\n\n"
+        "（1）プレイヤーの感情の変化を推測して、下記の選択肢から選択してください。\n"
         "嬉しさの変化: すごく嬉しい / 嬉しい / 普通\n"
         "テンションの変化: すごく上がる / 上がる / 上がらない\n"
         "安心感の変化: すごく安心 / 安心 / 普通\n\n"
+        "（2）会話履歴からキーワードを1つ以上（複数可）抽出してください。"
+        "キーワードは固有名詞・行動・感情・トピックなど、検索に使える短い単語句にしてください。\n\n"
         "必ず以下のキーを持つ JSON を返してください。"
-        "値は各選択肢のいずれか1つの文字列のみ:\n"
+        "感情の値は各選択肢のいずれか1つの文字列のみ:\n"
         '{"happy": "<すごく嬉しい|嬉しい|普通>", '
         '"tension": "<すごく上がる|上がる|上がらない>", '
-        '"safe": "<すごく安心|安心|普通>"}'
+        '"safe": "<すごく安心|安心|普通>", '
+        '"keywords": ["<キーワード1>", "<キーワード2>", ...]}'
     )
     response = client.models.generate_content(
         model=model,
@@ -837,6 +924,12 @@ def call_emotion_judge(
         return None
     if not isinstance(data, dict):
         return None
+    raw_keywords = data.get("keywords")
+    if isinstance(raw_keywords, list):
+        keywords = [str(k).strip() for k in raw_keywords if str(k).strip()]
+    else:
+        keywords = []
+    data["keywords"] = keywords
     return data
 
 
@@ -973,6 +1066,7 @@ def call_gemini(
     mid_term_text: str,
     mission_text: str,
     emotions_text: str,
+    recollections_text: str,
     image_path: Path,
 ) -> str:
     system_instruction = (
@@ -983,12 +1077,18 @@ def call_gemini(
     mission_block = (
         f"本日のミッション：\n{mission_text}\n\n" if mission_text else ""
     )
+    recollections_block = (
+        f"関連した過去の出来事：\n{recollections_text}\n\n"
+        if recollections_text
+        else ""
+    )
     user_text = (
         f"{mission_block}"
         "直近の会話履歴（古い順）：\n"
         f"{history_block}\n\n"
         "ここまでのプレイの概要（古い順）：\n"
         f"{mid_term_block}\n\n"
+        f"{recollections_block}"
         "添付の画像は現在のゲーム画面のキャプチャです。"
         "今までの会話履歴に自然につながる形で次に話す一言を出力してください。"
         "画像の内容も踏まえて、発話してください。"
@@ -1090,6 +1190,11 @@ async def main_loop(app: FastAPI) -> None:
             )
             emotions_text = format_emotions_block(emotions_row)
 
+            recollection_rows = await asyncio.to_thread(
+                fetch_recollection_summaries, db_path, character_id
+            )
+            recollections_text = format_recollections_text(recollection_rows)
+
             tier = app.state.model_tier
             model = app.state.model_names[tier]
             try:
@@ -1103,6 +1208,7 @@ async def main_loop(app: FastAPI) -> None:
                     mid_term_text,
                     mission_text,
                     emotions_text,
+                    recollections_text,
                     processed,
                 )
             except Exception:
@@ -1303,6 +1409,8 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
 
 EMOTION_LOOP_INTERVAL_SECONDS = 60
 EMOTION_HISTORY_COUNT = 30
+RECOLLECTION_TOP_N = 20
+RECOLLECTION_SAMPLE_SIZE = 5
 
 
 async def emotion_loop(app: FastAPI) -> None:
@@ -1410,6 +1518,38 @@ async def emotion_loop(app: FastAPI) -> None:
                             updated["tension"],
                             updated["safe"],
                         )
+
+                        # キーワードから長期記憶を引き、回想テーブルを更新する
+                        keywords = result.get("keywords") or []
+                        if keywords:
+                            candidates = await asyncio.to_thread(
+                                fetch_long_term_candidates,
+                                db_path,
+                                character_id,
+                                keywords,
+                                RECOLLECTION_TOP_N,
+                            )
+                            if candidates:
+                                sample_size = min(
+                                    RECOLLECTION_SAMPLE_SIZE, len(candidates)
+                                )
+                                picked = random.sample(candidates, sample_size)
+                            else:
+                                picked = []
+                            await asyncio.to_thread(
+                                replace_recollections,
+                                db_path,
+                                character_id,
+                                picked,
+                            )
+                            logger.info(
+                                "回想更新: keywords=%s 候補=%d件 採用=%s",
+                                keywords,
+                                len(candidates),
+                                picked,
+                            )
+                        else:
+                            logger.debug("キーワード抽出が空、回想は更新せず")
         except asyncio.CancelledError:
             logger.info("感情ループ停止")
             raise
