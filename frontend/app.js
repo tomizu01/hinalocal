@@ -15,6 +15,7 @@
   const missionSaveBtn = document.getElementById("mission-save-btn");
   const missionCancelBtn = document.getElementById("mission-cancel-btn");
   const missionEdit = document.getElementById("mission-edit");
+  const shutdownBtn = document.getElementById("shutdown-btn");
 
   let characterInfo = null;
 
@@ -317,6 +318,25 @@
       closeMissionEdit();
     }
   });
+
+  async function shutdown() {
+    if (!window.confirm("中期記憶を保存してプログラムを終了します。よろしいですか？")) {
+      return;
+    }
+    shutdownBtn.disabled = true;
+    setStatus("終了処理中（中期記憶を保存しています）...");
+    try {
+      const res = await fetch("/api/shutdown", { method: "POST" });
+      if (!res.ok) throw new Error(`status ${res.status}`);
+      setStatus("終了しました。タブを閉じてください。");
+    } catch (e) {
+      console.error("終了処理失敗", e);
+      setStatus("終了処理失敗");
+      shutdownBtn.disabled = false;
+    }
+  }
+
+  shutdownBtn.addEventListener("click", shutdown);
 
   fetchMission();
 

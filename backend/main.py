@@ -7,6 +7,7 @@ import logging
 import os
 import random
 import re
+import signal
 import sqlite3
 import time
 import uuid
@@ -1274,13 +1275,16 @@ async def main_loop(app: FastAPI) -> None:
         await wait_for_new_player_message(db_path, character_id, interval * 3, 5)
 
 
-async def mid_term_memory_loop(app: FastAPI) -> None:
-    """中期記憶バッチループ。
+async def run_mid_term_batch(app: FastAPI, *, force: bool = False) -> bool:
+    """中期記憶を1回分作成する。
     現在のキャラ・現在の day における mid_term_memories.last_message_id の
-    最大値を取得し、それより新しい messages が batch_threshold 件以上溜まって
-    いれば、直近 window_size 件（現 day 内）を flash モデルで要約して
-    mid_term_memories に保存する。挿入時に対象レコードの最大 id を
-    last_message_id として記録する。
+    最大値より新しい messages を対象に、直近 window_size 件（現 day 内）を
+    flash モデルで要約して mid_term_memories に保存する。挿入時に対象レコードの
+    最大 id を last_message_id として記録し、続けて好感度判定も行う。
+
+    通常は新規メッセージが batch_threshold 件以上のときだけ実行するが、
+    force=True なら 1 件でも新規があれば閾値を無視して要約する（終了時用）。
+    実際に中期記憶を保存したら True、しなければ False を返す。
     """
     cfg = app.state.config
     db_path = cfg["database"]["path"]
@@ -1290,142 +1294,154 @@ async def mid_term_memory_loop(app: FastAPI) -> None:
     window_size = mt_cfg["window_size"]
     target_chars = mt_cfg["target_chars"]
     batch_threshold = mt_cfg["batch_threshold"]
-    interval = mt_cfg["interval_seconds"]
     flash_model = cfg["gemini"]["flash_model"]
     game_name = cfg["game"]["name"]
     char_name = app.state.character_setting["name"]
     summary_template = read_prompt(cfg["prompts"]["summary_path"])
     client: genai.Client = app.state.gemini_client
 
-    logger.info(
-        "中期記憶ループ開始: character=%s day=%s game=%s threshold=%d window=%d interval=%ss",
+    last_msg_id = await asyncio.to_thread(
+        fetch_mid_term_last_message_id,
+        db_path,
         character_id,
         current_day,
-        game_name,
-        batch_threshold,
+    )
+    new_count = await asyncio.to_thread(
+        count_messages_after,
+        db_path,
+        character_id,
+        current_day,
+        last_msg_id,
+    )
+    if new_count == 0:
+        return False
+    if not force and new_count < batch_threshold:
+        return False
+
+    latest = await asyncio.to_thread(
+        fetch_max_message_id_today,
+        db_path,
+        character_id,
+        current_day,
+    )
+    logger.info(
+        "中期記憶バッチ実行 (day=%s, new=%d, last_msg_id=%d, latest=%d, force=%s)",
+        current_day,
+        new_count,
+        last_msg_id,
+        latest,
+        force,
+    )
+    history_rows = await asyncio.to_thread(
+        fetch_recent_history,
+        db_path,
+        character_id,
         window_size,
+        current_day,
+    )
+    history_text = history_to_text(history_rows)
+    try:
+        summary = await asyncio.to_thread(
+            call_summarize,
+            client,
+            flash_model,
+            summary_template,
+            history_text,
+            target_chars,
+            game_name,
+            char_name,
+        )
+    except Exception:
+        logger.exception("中期記憶の要約呼び出しに失敗")
+        return False
+    if not summary:
+        logger.warning("要約結果が空でした (latest=%d)", latest)
+        return False
+
+    await asyncio.to_thread(
+        insert_mid_term_memory,
+        db_path,
+        character_id,
+        summary,
+        current_day,
+        latest,
+        game_name,
+    )
+    logger.info(
+        "中期記憶を保存 (day=%s, last_message_id=%d, game=%s): %s",
+        current_day,
+        latest,
+        game_name,
+        summary[:60],
+    )
+    # 続いて好感度の変化を判定（独立して呼び出す。
+    # 既存の要約と1回にまとめることもできるが、頻度を別途
+    # 変える可能性があるため分離している）
+    master = await asyncio.to_thread(fetch_character_master, db_path, character_id)
+    if master is None:
+        logger.warning(
+            "characters マスター未登録 (%s) のため好感度判定をスキップ",
+            character_id,
+        )
+    else:
+        try:
+            ares = await asyncio.to_thread(
+                call_affection_judge,
+                client,
+                flash_model,
+                game_name,
+                char_name,
+                summary,
+            )
+        except Exception:
+            logger.exception("好感度判定の Gemini 呼び出しに失敗")
+            ares = None
+        if ares is not None:
+            a_delta = master["affection_delta"]
+            choice = ares.get("affection")
+            if choice == "すごく上がる":
+                da = a_delta
+            elif choice == "上がらない":
+                da = -a_delta
+            else:
+                da = 0
+            updated = await asyncio.to_thread(
+                apply_emotion_delta,
+                db_path,
+                character_id,
+                0,
+                0,
+                0,
+                da,
+            )
+            logger.info(
+                "好感度更新: da=%+d (choice=%s) → affection=%d",
+                da,
+                choice,
+                updated["affection"],
+            )
+    return True
+
+
+async def mid_term_memory_loop(app: FastAPI) -> None:
+    """中期記憶バッチループ。一定間隔で run_mid_term_batch を呼ぶ。"""
+    cfg = app.state.config
+    mt_cfg = cfg["memory"]["mid_term"]
+    interval = mt_cfg["interval_seconds"]
+
+    logger.info(
+        "中期記憶ループ開始: character=%s day=%s game=%s threshold=%d window=%d interval=%ss",
+        cfg["character"]["current_id"],
+        app.state.current_day,
+        cfg["game"]["name"],
+        mt_cfg["batch_threshold"],
+        mt_cfg["window_size"],
         interval,
     )
 
     while True:
         try:
-            last_msg_id = await asyncio.to_thread(
-                fetch_mid_term_last_message_id,
-                db_path,
-                character_id,
-                current_day,
-            )
-            new_count = await asyncio.to_thread(
-                count_messages_after,
-                db_path,
-                character_id,
-                current_day,
-                last_msg_id,
-            )
-            if new_count >= batch_threshold:
-                latest = await asyncio.to_thread(
-                    fetch_max_message_id_today,
-                    db_path,
-                    character_id,
-                    current_day,
-                )
-                logger.info(
-                    "中期記憶バッチ実行 (day=%s, new=%d, last_msg_id=%d, latest=%d)",
-                    current_day,
-                    new_count,
-                    last_msg_id,
-                    latest,
-                )
-                history_rows = await asyncio.to_thread(
-                    fetch_recent_history,
-                    db_path,
-                    character_id,
-                    window_size,
-                    current_day,
-                )
-                history_text = history_to_text(history_rows)
-                try:
-                    summary = await asyncio.to_thread(
-                        call_summarize,
-                        client,
-                        flash_model,
-                        summary_template,
-                        history_text,
-                        target_chars,
-                        game_name,
-                        char_name,
-                    )
-                except Exception:
-                    logger.exception("中期記憶の要約呼び出しに失敗")
-                    await asyncio.sleep(interval)
-                    continue
-                if not summary:
-                    logger.warning("要約結果が空でした (latest=%d)", latest)
-                else:
-                    await asyncio.to_thread(
-                        insert_mid_term_memory,
-                        db_path,
-                        character_id,
-                        summary,
-                        current_day,
-                        latest,
-                        game_name,
-                    )
-                    logger.info(
-                        "中期記憶を保存 (day=%s, last_message_id=%d, game=%s): %s",
-                        current_day,
-                        latest,
-                        game_name,
-                        summary[:60],
-                    )
-                    # 続いて好感度の変化を判定（独立して呼び出す。
-                    # 既存の要約と1回にまとめることもできるが、頻度を別途
-                    # 変える可能性があるため分離している）
-                    master = await asyncio.to_thread(
-                        fetch_character_master, db_path, character_id
-                    )
-                    if master is None:
-                        logger.warning(
-                            "characters マスター未登録 (%s) のため好感度判定をスキップ",
-                            character_id,
-                        )
-                    else:
-                        try:
-                            ares = await asyncio.to_thread(
-                                call_affection_judge,
-                                client,
-                                flash_model,
-                                game_name,
-                                char_name,
-                                summary,
-                            )
-                        except Exception:
-                            logger.exception("好感度判定の Gemini 呼び出しに失敗")
-                            ares = None
-                        if ares is not None:
-                            a_delta = master["affection_delta"]
-                            choice = ares.get("affection")
-                            if choice == "すごく上がる":
-                                da = a_delta
-                            elif choice == "上がらない":
-                                da = -a_delta
-                            else:
-                                da = 0
-                            updated = await asyncio.to_thread(
-                                apply_emotion_delta,
-                                db_path,
-                                character_id,
-                                0,
-                                0,
-                                0,
-                                da,
-                            )
-                            logger.info(
-                                "好感度更新: da=%+d (choice=%s) → affection=%d",
-                                da,
-                                choice,
-                                updated["affection"],
-                            )
+            await run_mid_term_batch(app, force=False)
         except asyncio.CancelledError:
             logger.info("中期記憶ループ停止")
             raise
@@ -1750,6 +1766,30 @@ async def post_player_message(msg: PlayerMessage):
         1,
     )
     return {"id": new_id}
+
+
+def _trigger_shutdown() -> None:
+    """uvicorn にグレースフルシャットダウンを要求する。
+    SIGINT を自プロセスに送ると uvicorn のハンドラが should_exit を立て、
+    lifespan の終了処理（各ループの停止）が走ってクリーンに終了する。
+    """
+    logger.info("サーバを停止します")
+    signal.raise_signal(signal.SIGINT)
+
+
+@app.post("/api/shutdown")
+async def shutdown():
+    """終了処理。中期記憶バッチを強制実行してからサーバを停止する。"""
+    logger.info("終了リクエスト受信: 中期記憶バッチを実行してから終了します")
+    try:
+        created = await run_mid_term_batch(app, force=True)
+    except Exception:
+        logger.exception("終了時の中期記憶バッチに失敗（終了処理は継続）")
+        created = False
+    # レスポンスを返してから停止させる（即時に SIGINT を送ると
+    # クライアントが応答を受け取れないことがあるため少し遅延させる）
+    asyncio.get_running_loop().call_later(0.5, _trigger_shutdown)
+    return {"status": "shutting_down", "mid_term_created": created}
 
 
 FRONTEND_DIR = Path(__file__).parent.parent / "frontend"

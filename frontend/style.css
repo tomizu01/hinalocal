@@ -305,6 +305,31 @@ body {
   background: rgba(255, 255, 255, 0.3);
 }
 
+.mission-footer {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 5px;
+}
+
+#shutdown-btn {
+  padding: 6px 16px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(180, 30, 30, 0.6);
+  color: #fff;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+#shutdown-btn:hover {
+  background: rgba(180, 30, 30, 0.85);
+}
+
+#shutdown-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .start-overlay {
   position: fixed;
   inset: 0;

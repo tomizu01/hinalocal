@@ -23,7 +23,8 @@
       "Read(//c/Users/tomi/.claude/projects/C--hinalive/**)",
       "Read(//c/Users/tomi/.claude/projects//**)",
       "Bash(/c/hinalive/backend/venv/Scripts/python.exe main.py --help)",
-      "Bash(/c/hinalive/backend/venv/Scripts/python.exe -m py_compile /c/hinalive/backend/main.py)"
+      "Bash(/c/hinalive/backend/venv/Scripts/python.exe -m py_compile /c/hinalive/backend/main.py)",
+      "Bash(node --check frontend/app.js)"
     ]
   }
 }
