@@ -103,22 +103,6 @@ body {
   min-height: 0;
 }
 
-#model-btn {
-  background: rgba(255, 255, 255, 0.9);
-  border: 1px solid rgba(0, 0, 0, 0.15);
-  color: #1a1f29;
-  padding: 8px 16px;
-  border-radius: 20px;
-  font-size: 13px;
-  cursor: pointer;
-}
-
-#model-btn[aria-pressed="true"] {
-  background: #2e6dd2;
-  color: #fff;
-  border-color: #2e6dd2;
-}
-
 .status {
   font-size: 12px;
   color: #1a1f29;
@@ -275,71 +259,50 @@ body {
   color: rgba(255, 255, 255, 0.7);
 }
 
-.mission-modal {
-  position: fixed;
-  inset: 0;
-  background: rgba(14, 17, 22, 0.7);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 20;
+.hidden {
+  display: none !important;
 }
 
-.mission-modal.hidden {
-  display: none;
-}
-
-.mission-modal-box {
-  background: #1a1f29;
-  border: 1px solid #2a3140;
-  border-radius: 12px;
-  padding: 20px;
-  width: min(90vw, 480px);
+.mission-edit {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  color: #e6e8eb;
-}
-
-.mission-modal-title {
-  margin: 0;
-  font-size: 16px;
-  color: #e6e8eb;
+  gap: 8px;
 }
 
 #mission-input {
   width: 100%;
   padding: 10px 12px;
   border-radius: 6px;
-  border: 1px solid #2a3140;
-  background: #0e1116;
-  color: #e6e8eb;
-  font-size: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.95);
+  color: #1a1f29;
+  font-size: 18px;
+  box-sizing: border-box;
 }
 
 #mission-input:focus {
   outline: none;
-  border-color: #5aa9ff;
+  border-color: #fff;
 }
 
-.mission-modal-actions {
+.mission-edit-actions {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
 }
 
-.mission-modal-actions button {
-  padding: 8px 14px;
+.mission-edit-actions button {
+  padding: 6px 14px;
   border-radius: 6px;
-  border: 1px solid #2a3140;
-  background: #1a1f29;
-  color: #e6e8eb;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
   font-size: 14px;
   cursor: pointer;
 }
 
-.mission-modal-actions button:hover {
-  background: #232a37;
+.mission-edit-actions button:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .start-overlay {

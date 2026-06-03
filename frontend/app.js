@@ -6,7 +6,6 @@
   const playerInput = document.getElementById("player-input");
   const micBtn = document.getElementById("mic-btn");
   const autoBtn = document.getElementById("auto-btn");
-  const modelBtn = document.getElementById("model-btn");
   const statusEl = document.getElementById("status-text");
   const lastPlayerEl = document.getElementById("last-player");
   const characterImg = document.getElementById("character-img");
@@ -15,7 +14,7 @@
   const missionEditBtn = document.getElementById("mission-edit-btn");
   const missionSaveBtn = document.getElementById("mission-save-btn");
   const missionCancelBtn = document.getElementById("mission-cancel-btn");
-  const missionModal = document.getElementById("mission-modal");
+  const missionEdit = document.getElementById("mission-edit");
 
   let characterInfo = null;
 
@@ -257,60 +256,23 @@
     autoBtn.textContent = `AUTO: ${autoMicEnabled ? "ON" : "OFF"}`;
   });
 
-  function applyModelTier(tier) {
-    modelBtn.dataset.tier = tier;
-    modelBtn.textContent = `モデル: ${tier.toUpperCase()}`;
-    modelBtn.setAttribute("aria-pressed", String(tier === "pro"));
-  }
-
-  async function fetchModelTier() {
-    try {
-      const res = await fetch("/api/model");
-      if (!res.ok) return;
-      const data = await res.json();
-      if (data && data.tier) applyModelTier(data.tier);
-    } catch (e) {
-      console.warn("モデル状態取得失敗", e);
-    }
-  }
-
-  async function setModelTier(tier) {
-    const prev = modelBtn.dataset.tier;
-    applyModelTier(tier);
-    try {
-      const res = await fetch("/api/model", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tier }),
-      });
-      if (!res.ok) throw new Error(`status ${res.status}`);
-    } catch (e) {
-      console.error("モデル切替失敗", e);
-      setStatus("モデル切替失敗");
-      applyModelTier(prev);
-    }
-  }
-
-  modelBtn.addEventListener("click", () => {
-    const next = modelBtn.dataset.tier === "flash" ? "pro" : "flash";
-    setModelTier(next);
-  });
-
-  fetchModelTier();
-
   function applyMission(data) {
     missionTextEl.textContent = data.content || "";
   }
 
-  function openMissionModal() {
+  function openMissionEdit() {
     missionInput.value = missionTextEl.textContent || "";
-    missionModal.classList.remove("hidden");
+    missionTextEl.classList.add("hidden");
+    missionEditBtn.classList.add("hidden");
+    missionEdit.classList.remove("hidden");
     missionInput.focus();
     missionInput.select();
   }
 
-  function closeMissionModal() {
-    missionModal.classList.add("hidden");
+  function closeMissionEdit() {
+    missionEdit.classList.add("hidden");
+    missionTextEl.classList.remove("hidden");
+    missionEditBtn.classList.remove("hidden");
   }
 
   async function fetchMission() {
@@ -334,15 +296,15 @@
       if (!res.ok) throw new Error(`status ${res.status}`);
       const data = await res.json();
       applyMission(data);
-      closeMissionModal();
+      closeMissionEdit();
     } catch (e) {
       console.error("ミッション保存失敗", e);
       setStatus("ミッション保存失敗");
     }
   }
 
-  missionEditBtn.addEventListener("click", openMissionModal);
-  missionCancelBtn.addEventListener("click", closeMissionModal);
+  missionEditBtn.addEventListener("click", openMissionEdit);
+  missionCancelBtn.addEventListener("click", closeMissionEdit);
   missionSaveBtn.addEventListener("click", () => {
     saveMission(missionInput.value.trim());
   });
@@ -352,11 +314,8 @@
       saveMission(missionInput.value.trim());
     } else if (e.key === "Escape") {
       e.preventDefault();
-      closeMissionModal();
+      closeMissionEdit();
     }
-  });
-  missionModal.addEventListener("click", (e) => {
-    if (e.target === missionModal) closeMissionModal();
   });
 
   fetchMission();

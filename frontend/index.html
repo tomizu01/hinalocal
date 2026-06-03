@@ -22,10 +22,21 @@
           <button type="button" id="mission-edit-btn" aria-label="編集">✎</button>
         </div>
         <span id="mission-text" class="mission-text"></span>
+        <div id="mission-edit" class="mission-edit hidden">
+          <input
+            type="text"
+            id="mission-input"
+            placeholder="今日のミッション..."
+            autocomplete="off"
+          />
+          <div class="mission-edit-actions">
+            <button type="button" id="mission-save-btn">保存</button>
+            <button type="button" id="mission-cancel-btn">キャンセル</button>
+          </div>
+        </div>
       </section>
 
       <div class="right-spacer">
-        <button type="button" id="model-btn" data-tier="flash">モデル: FLASH</button>
         <span id="status-text" class="status"></span>
       </div>
 
@@ -33,22 +44,6 @@
         <img id="character-img" alt="character" />
       </section>
     </aside>
-
-    <div id="mission-modal" class="mission-modal hidden">
-      <div class="mission-modal-box">
-        <h3 class="mission-modal-title">ミッションを編集</h3>
-        <input
-          type="text"
-          id="mission-input"
-          placeholder="今日のミッション..."
-          autocomplete="off"
-        />
-        <div class="mission-modal-actions">
-          <button type="button" id="mission-save-btn">保存</button>
-          <button type="button" id="mission-cancel-btn">キャンセル</button>
-        </div>
-      </div>
-    </div>
 
     <section class="bubble">
       <div class="bubble-body">

@@ -1225,8 +1225,7 @@ async def main_loop(app: FastAPI) -> None:
             )
             recollections_text = format_recollections_text(recollection_rows)
 
-            tier = app.state.model_tier
-            model = app.state.model_names[tier]
+            model = app.state.model
             try:
                 message = await asyncio.to_thread(
                     call_gemini,
@@ -1242,7 +1241,7 @@ async def main_loop(app: FastAPI) -> None:
                     processed,
                 )
             except Exception:
-                logger.exception("Gemini呼び出し失敗 (tier=%s, model=%s)", tier, model)
+                logger.exception("Gemini呼び出し失敗 (model=%s)", model)
                 await asyncio.sleep(interval)
                 continue
 
@@ -1261,8 +1260,7 @@ async def main_loop(app: FastAPI) -> None:
                 0,
             )
             logger.info(
-                "AI発話を保存 (tier=%s, day=%s): %s",
-                tier,
+                "AI発話を保存 (day=%s): %s",
                 current_day,
                 message[:40],
             )
@@ -1589,9 +1587,6 @@ async def emotion_loop(app: FastAPI) -> None:
         await asyncio.sleep(EMOTION_LOOP_INTERVAL_SECONDS)
 
 
-VALID_TIERS = ("flash", "pro")
-
-
 def resolve_current_day(db_path: str, character_id: str) -> int:
     """起動時の current_day を決定する。
     1. HINALIVE_DAY が指定されていればそれを int として採用
@@ -1646,21 +1641,8 @@ async def lifespan(app: FastAPI):
             app.state.current_day,
         )
     app.state.gemini_client = build_gemini_client(cfg["gemini"]["api_key"])
-    app.state.model_names = {
-        "flash": cfg["gemini"]["flash_model"],
-        "pro": cfg["gemini"]["pro_model"],
-    }
-    default_tier = cfg["gemini"].get("default_tier", "flash")
-    if default_tier not in VALID_TIERS:
-        logger.warning("default_tier=%s が不正なので flash に補正", default_tier)
-        default_tier = "flash"
-    app.state.model_tier = default_tier
-    logger.info(
-        "Geminiモデル初期化: tier=%s flash=%s pro=%s",
-        default_tier,
-        app.state.model_names["flash"],
-        app.state.model_names["pro"],
-    )
+    app.state.model = cfg["gemini"]["flash_model"]
+    logger.info("Geminiモデル初期化: model=%s", app.state.model)
     Path(cfg["capture"]["processing_dir"]).mkdir(parents=True, exist_ok=True)
 
     main_task = asyncio.create_task(main_loop(app))
@@ -1683,10 +1665,6 @@ app = FastAPI(lifespan=lifespan)
 
 class PlayerMessage(BaseModel):
     content: str
-
-
-class ModelTierUpdate(BaseModel):
-    tier: str
 
 
 class MissionUpdate(BaseModel):
@@ -1719,24 +1697,6 @@ async def get_character():
         "name": setting["name"],
         "voice_id": setting["voice_id"],
     }
-
-
-@app.get("/api/model")
-async def get_model():
-    return {
-        "tier": app.state.model_tier,
-        "models": app.state.model_names,
-    }
-
-
-@app.post("/api/model")
-async def set_model(payload: ModelTierUpdate):
-    tier = payload.tier
-    if tier not in VALID_TIERS:
-        raise HTTPException(status_code=400, detail=f"tier must be one of {VALID_TIERS}")
-    app.state.model_tier = tier
-    logger.info("モデル切替: tier=%s model=%s", tier, app.state.model_names[tier])
-    return {"tier": tier, "model": app.state.model_names[tier]}
 
 
 @app.get("/api/mission")
