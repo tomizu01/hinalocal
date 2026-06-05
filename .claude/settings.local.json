@@ -24,7 +24,10 @@
       "Read(//c/Users/tomi/.claude/projects//**)",
       "Bash(/c/hinalive/backend/venv/Scripts/python.exe main.py --help)",
       "Bash(/c/hinalive/backend/venv/Scripts/python.exe -m py_compile /c/hinalive/backend/main.py)",
-      "Bash(node --check frontend/app.js)"
+      "Bash(node --check frontend/app.js)",
+      "PowerShell(python -c \"import ast; ast.parse\\(open\\(r'C:\\\\hinalive\\\\backend\\\\main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "PowerShell(python C:\\\\hinalive\\\\backend\\\\main.py --help)",
+      "PowerShell(C:\\\\hinalive\\\\backend\\\\venv\\\\Scripts\\\\python.exe C:\\\\hinalive\\\\backend\\\\main.py --help)"
     ]
   }
 }

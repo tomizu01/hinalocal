@@ -124,6 +124,7 @@ hinalive/
 - `--window <タイトル部分一致>` … `capture.window_title` を実行時に上書き
 - `--cheer <ファイル名>` … 実況応援プロンプトファイルを
   `backend/characters/<char_id>/prompts/` 配下から指定して上書き（拡張子省略可）
+- `--game <ゲーム名>` … `game.name` を実行時に上書き
 - `--day <整数>` … プレイ日 (Day) を整数で指定（`1` のような連番でも `20260513` のような日付運用でも可）。
   - 未指定時は、現キャラの `messages` で最新 `created_at` の行の `day` を取得して **継続**
   - 履歴が1件もなければ `1` で新規開始
@@ -438,7 +439,7 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 ワンショットで切り替えたい場合は、`config.yaml` を書き換えず以下のように起動時オプションで指定できる：
 
 ```powershell
-python backend\main.py --window "Minecraft" --cheer minecraft
+python backend\main.py --window "Minecraft" --cheer minecraft --game "Minecraft"
 ```
 
 ## 開発環境について

@@ -104,6 +104,11 @@ def load_config() -> dict[str, Any]:
     if window_override:
         cfg["capture"]["window_title"] = window_override
         logger.info("ウィンドウタイトルを上書き: %s", window_override)
+
+    game_override = os.environ.get("HINALIVE_GAME_NAME")
+    if game_override:
+        cfg["game"]["name"] = game_override
+        logger.info("ゲーム名を上書き: %s", game_override)
     return cfg
 
 
@@ -1899,6 +1904,10 @@ if __name__ == "__main__":
         help="config.yaml の capture.window_title を上書きするウィンドウタイトル（部分一致）",
     )
     parser.add_argument(
+        "--game",
+        help="config.yaml の game.name を上書きするゲーム名",
+    )
+    parser.add_argument(
         "--day",
         type=int,
         help="プレイ日 (Day) を整数で指定。1, 20260513 などどちらの運用も可。"
@@ -1918,6 +1927,8 @@ if __name__ == "__main__":
         os.environ["HINALIVE_CHEER_FILE"] = args.cheer
     if args.window:
         os.environ["HINALIVE_WINDOW_TITLE"] = args.window
+    if args.game:
+        os.environ["HINALIVE_GAME_NAME"] = args.game
     if args.day is not None:
         os.environ["HINALIVE_DAY"] = str(args.day)
 
