@@ -34,6 +34,17 @@
     return res.json();
   }
 
+  function applyRoomBackground() {
+    if (!characterInfo) return;
+    const src = `images/${characterInfo.id}/room.png`;
+    const img = new Image();
+    img.onload = () => {
+      document.querySelector(".app").style.backgroundImage = `url("${src}")`;
+    };
+    // 読み込み失敗時は CSS デフォルト (images/parts/room.png) のまま
+    img.src = src;
+  }
+
   function setLastPlayer(text) {
     lastPlayerEl.textContent = text ? `あなた: ${text}` : "";
   }
@@ -380,6 +391,7 @@
     try {
       characterInfo = await fetchCharacter();
       setCharacterState("stand");
+      applyRoomBackground();
     } catch (e) {
       console.error("キャラ情報取得失敗", e);
       setStatus("キャラ情報の取得に失敗しました");
@@ -391,6 +403,7 @@
       try {
         characterInfo = await fetchCharacter();
         setCharacterState("stand");
+        applyRoomBackground();
       } catch (e) {
         console.error("キャラ情報取得失敗", e);
         setStatus("キャラ情報の取得に失敗しました");

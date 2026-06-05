@@ -21,7 +21,7 @@ body {
   grid-template-rows: 810px 200px 70px;
   width: 1920px;
   height: 1080px;
-  background: url("images/parts/hina_room.png") top left / 1920px 1080px no-repeat;
+  background: url("images/parts/room.png") top left / 1920px 1080px no-repeat;
 }
 
 .game-area {
