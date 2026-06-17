@@ -46,7 +46,7 @@
   }
 
   function setLastPlayer(text) {
-    lastPlayerEl.textContent = text ? `あなた: ${text}` : "";
+    lastPlayerEl.textContent = text ? `プレーヤー：${text}` : "";
   }
 
   let autoMicEnabled = false;
