@@ -56,20 +56,23 @@
     </section>
 
     <section class="input-area">
-      <form id="player-form">
-        <input
-          type="text"
-          id="player-input"
-          placeholder="メッセージを入力..."
-          autocomplete="off"
-        />
-        <button type="submit" id="send-btn">送信</button>
-      </form>
-      <button type="button" id="mic-btn">🎤 音声入力</button>
-      <button type="button" id="auto-btn" aria-pressed="false">AUTO: OFF</button>
       <p id="last-player" class="last-player"></p>
     </section>
   </main>
+
+  <div class="player-controls">
+    <form id="player-form">
+      <input
+        type="text"
+        id="player-input"
+        placeholder="メッセージを入力..."
+        autocomplete="off"
+      />
+      <button type="submit" id="send-btn">送信</button>
+    </form>
+    <button type="button" id="mic-btn">🎤 音声入力</button>
+    <button type="button" id="auto-btn" aria-pressed="false">AUTO: OFF</button>
+  </div>
 
   <script src="config.js"></script>
   <script src="app.js"></script>

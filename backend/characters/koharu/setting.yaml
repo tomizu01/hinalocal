@@ -3,3 +3,4 @@
 name: "こはる"
 # ElevenLabs のボイスID。フロントエンドに渡され TTS で使用される
 voice_id: "hMK7c1GPJmptCzI4bQIu"
+#voice_id: "JTlYtJrcTzPC71hMLOxo"
