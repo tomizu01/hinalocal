@@ -37,6 +37,22 @@ CHARACTERS_DIR = Path(__file__).parent / "characters"
 
 CHARACTER_ID_RE = re.compile(r"^[A-Za-z]{1,16}$")
 
+# 音声認識でよく誤認識される文字列の置換リスト（特に人名）。
+# プレイヤー発言を会話履歴に書き込む前に、ここに並べた (誤り, 正しい表記) を
+# 上から順に適用する。新しい誤認識が見つかったらこの配列に追加していく。
+SPEECH_CORRECTIONS: list[tuple[str, str]] = [
+    ("梨花", "りんか"),
+    ("凜華", "りんか"),
+    ("凛華", "りんか"),
+]
+
+
+def apply_speech_corrections(text: str) -> str:
+    """SPEECH_CORRECTIONS を上から順に単純置換して返す。"""
+    for wrong, correct in SPEECH_CORRECTIONS:
+        text = text.replace(wrong, correct)
+    return text
+
 
 def validate_character_id(cid: Any) -> str:
     """character_id を A-Za-z 1-16文字に制限。違反したら ValueError。"""
@@ -1277,7 +1293,7 @@ async def main_loop(app: FastAPI) -> None:
         except Exception:
             logger.exception("メインループで予期せぬ例外")
 
-        await wait_for_new_player_message(db_path, character_id, interval * 3, 5)
+        await wait_for_new_player_message(db_path, character_id, interval * 5, 5)
 
 
 async def run_mid_term_batch(app: FastAPI, *, force: bool = False) -> bool:
@@ -1758,6 +1774,11 @@ async def post_player_message(msg: PlayerMessage):
     text = msg.content.strip()
     if not text:
         raise HTTPException(status_code=400, detail="content is empty")
+    # 音声認識の誤認識（特に人名）を会話履歴に書き込む前に補正する
+    corrected = apply_speech_corrections(text)
+    if corrected != text:
+        logger.info("音声認識の補正を適用: %r → %r", text, corrected)
+    text = corrected
     cfg = app.state.config
     character_id = cfg["character"]["current_id"]
     current_day = app.state.current_day

@@ -292,6 +292,12 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 ### POST /api/messages/player  （プレイヤー会話保存API）
 - フロントから送られたテキスト（手入力 or 音声入力）をDBに保存
 - speaker="player"、未再生フラグは不要（または常に再生済扱い）
+- **音声認識の誤認識補正**：DBに保存する前に、音声認識でよく誤認識される文字列（特に人名）を文字列置換で補正してから会話履歴に書き込む
+  - 置換リストは `main.py` の `SPEECH_CORRECTIONS`（`(誤り, 正しい表記)` タプルの配列）で持ち、新しい誤認識が見つかったら配列に追加していく運用
+  - `apply_speech_corrections()` が配列を上から順に単純置換（`str.replace`）で適用する
+  - 例：`梨花`→`りんか`、`凜華`/`凛華`→`りんか`
+  - 補正が発生した場合のみ `補正前 → 補正後` をログ出力する
+  - 手入力・音声入力の両方が本APIを通るため、どちらにも補正がかかる
 
 ### 静的ファイル配信
 - `app.mount("/", StaticFiles(directory="frontend", html=True))`
