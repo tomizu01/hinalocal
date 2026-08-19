@@ -1,5 +1,5 @@
 (() => {
-  const cfg = window.HINALIVE_CONFIG;
+  const cfg = window.HINALOCAL_CONFIG;
 
   const bubbleEl = document.getElementById("bubble-text");
   const playerForm = document.getElementById("player-form");
@@ -115,29 +115,16 @@
   }
 
   async function synthesizeSpeech(text) {
-    const e = cfg.elevenlabs;
-    const voiceId = characterInfo && characterInfo.voice_id;
-    if (!voiceId) throw new Error("voice_id 未取得");
-    const url = `https://api.elevenlabs.io/v1/text-to-speech/${encodeURIComponent(
-      voiceId
-    )}`;
-    const res = await fetch(url, {
+    // TTS はバックエンド経由で AivisSpeech Engine（別PC可）に中継される。
+    // スタイルIDはバックエンド側でキャラ設定から解決する。
+    const res = await fetch("/api/tts", {
       method: "POST",
-      headers: {
-        "xi-api-key": e.apiKey,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        text,
-        model_id: e.modelId,
-        language_code: e.languageCode,
-        output_format: e.outputFormat,
-        voice_settings: e.voiceSettings,
-      }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
     });
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`ElevenLabs ${res.status}: ${body.slice(0, 200)}`);
+      throw new Error(`TTS ${res.status}: ${body.slice(0, 200)}`);
     }
     const blob = await res.blob();
     return URL.createObjectURL(blob);
@@ -205,7 +192,7 @@
 
       await Promise.all([
         typewriter(text, cfg.typewriterCharsPerSecond),
-        playAudio(audioUrl, cfg.elevenlabs.audioMaxMs),
+        playAudio(audioUrl, cfg.tts.audioMaxMs),
       ]);
     } finally {
       setCharacterState("stand");

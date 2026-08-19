@@ -1,11 +1,51 @@
 # このファイルは backend/config.yaml の雛形です。
-# このファイルをコピーして `config.yaml` を作成し、API キー等を埋めて使用してください。
+# このファイルをコピーして `config.yaml` を作成し、環境に合わせて書き換えて使用してください。
 # 実体の config.yaml は .gitignore で除外されています。
+# 外部APIは使わず、LLM は Ollama、TTS は AivisSpeech Engine をローカルネットワーク上で使う。
 
-# Gemini設定
-gemini:
-  api_key: "YOUR_GEMINI_API_KEY_HERE"
-  flash_model: "gemini-3.5-flash"
+# ローカルLLM設定（Ollama）
+llm:
+  # Ollama サーバのベースURL。別PCで動かす場合は IP でも mDNS 名でもよい
+  # 例: "http://192.168.1.20:11434" / "http://ollama-pc.local:11434"
+  # ※別PCから接続するには Ollama 側で OLLAMA_HOST=0.0.0.0 を設定しておく
+  base_url: "http://ollama-pc.local:11434"
+  # メインの実況生成に使うモデル（画面キャプチャを送るので vision 対応が必須）
+  model: "gemma4:26b"
+  # 要約・感情判定・長期記憶抽出に使う軽量モデル（空ならメインと同じモデルを使う）
+  sub_model: ""
+  # 1回の生成を待つ上限（秒）。ローカル生成は遅いので長めに取る
+  timeout_seconds: 180
+  # 生成後もモデルをVRAM/メモリに保持する時間（Ollama の keep_alive）
+  keep_alive: "30m"
+  # thinking（推論トレース）の制御。gemma4 系のような thinking 対応モデルは
+  # false にしないと出力が message.thinking 側に流れ、発話本文が空になる。
+  # 空にすると think 自体を送らない（thinking 非対応モデルでエラーになる場合用）。
+  think: false
+  # Ollama に渡す生成オプション
+  options:
+    temperature: 1.0
+    # コンテキスト長。会話履歴＋画像を入れるので余裕を持たせる
+    num_ctx: 8192
+    # 1回の発話の最大トークン数
+    num_predict: 256
+
+# ローカルTTS設定（AivisSpeech Engine）
+tts:
+  # AivisSpeech Engine のベースURL（既定ポートは 10101）
+  # 別PCで動かす場合は Engine を --host 0.0.0.0 で起動しておく
+  base_url: "http://aivis-pc.local:10101"
+  # 合成待ちの上限（秒）
+  timeout_seconds: 60
+  # キャラの setting.yaml に style_id が無いときに使うスタイルID
+  # 利用可能なIDは起動後に GET /api/tts/speakers で確認できる
+  default_style_id: 888753760
+  # AudioQuery の既定パラメータ（キャラ別に setting.yaml の tts: で上書き可）
+  query:
+    speedScale: 1.0
+    pitchScale: 0.0
+    intonationScale: 1.0
+    volumeScale: 1.0
+    tempoDynamicsScale: 1.0
 
 # キャプチャ設定
 capture:
@@ -13,7 +53,7 @@ capture:
   # 起動時オプション --window で上書き可能。
   window_title: "Minecraft"
   # 加工後画像の保存フォルダ
-  processing_dir: "C:/hinalive/captures/processing"
+  processing_dir: "C:/hinalocal/captures/processing"
 
 # 画像加工設定（キャプチャしたウィンドウ画像に対する追加クリップ）
 image:
@@ -25,11 +65,12 @@ image:
     x2: 0
     y2: 0
   # リサイズ後の横幅（px）。縦は成り行き。0なら リサイズなし。
-  resize_width: 768
+  # 小さいほど画像の入力トークンが減り、生成が速くなる（画面の細部は読み取りにくくなる）。
+  resize_width: 512
 
 # 会話履歴
 history:
-  # Gemini呼び出し時に取得する直近の件数
+  # LLM呼び出し時に取得する直近の件数
   recent_count: 30
 
 # メインループ
@@ -39,7 +80,7 @@ loop:
 
 # DB
 database:
-  path: "C:/hinalive/backend/data.db"
+  path: "C:/hinalocal/backend/data.db"
 
 # プロンプトファイル
 # キャラ別プロンプト（character.md / cheer.md）は
@@ -47,7 +88,7 @@ database:
 # cheer.md の代わりに使うファイルは起動オプション --cheer で上書き可能。
 prompts:
   # 中期記憶生成用テンプレート。{target_chars} {history_text} {game_name} を埋め込む
-  summary_path: "C:/hinalive/backend/prompts/summary.md"
+  summary_path: "C:/hinalocal/backend/prompts/summary.md"
 
 # ゲーム
 game:

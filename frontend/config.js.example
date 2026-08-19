@@ -1,21 +1,12 @@
 // このファイルは frontend/config.js の雛形です。
-// このファイルをコピーして `config.js` を作成し、API キー等を埋めて使用してください。
+// このファイルをコピーして `config.js` を作成し、環境に合わせて書き換えて使用してください。
 // 実体の config.js は .gitignore で除外されています。
 
-// ElevenLabs フロント側設定（自分専用ソフトのため直書き）
-window.HINALIVE_CONFIG = {
-  elevenlabs: {
-    apiKey: "YOUR_ELEVENLABS_API_KEY_HERE",
-    // voiceId はバックエンド /api/character から取得する（キャラ別 setting.yaml）
-    modelId: "eleven_v3",
-    languageCode: "ja",
-    outputFormat: "mp3_44100_64",
-    voiceSettings: {
-      stability: 1.0,
-      similarity_boost: 0.75,
-      style: 0.0,
-      use_speaker_boost: true,
-    },
+// フロント側設定。TTS は バックエンドの /api/tts 経由で
+// ローカルネットワーク上の AivisSpeech Engine に中継されるため、
+// 接続先やスタイルIDの設定は backend/config.yaml 側で行う。
+window.HINALOCAL_CONFIG = {
+  tts: {
     // ハルシネーション対策：再生開始から固定 ms で強制停止
     audioMaxMs: 25000,
   },

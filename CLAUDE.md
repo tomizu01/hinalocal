@@ -1,3 +1,3 @@
-# Hinalive
+# Hinalocal
 
-本プロジェクトの詳細仕様は [`hinalive.md`](./hinalive.md) に記載されています。
+本プロジェクトの詳細仕様は [`hinalocal.md`](./hinalocal.md) に記載されています。

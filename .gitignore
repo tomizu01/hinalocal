@@ -3,6 +3,7 @@ __pycache__/
 *.pyc
 *.pyo
 backend/venv/
+data.db
 
 # Local conversation DB (contains personal chat history)
 backend/data.db

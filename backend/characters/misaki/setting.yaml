@@ -1,0 +1,12 @@
+# キャラクター設定（このディレクトリのキャラ）
+# キャラ名称（プロンプト等で参照される表示名）
+name: "みさき"
+# AivisSpeech のスタイルID（整数）。GET /api/tts/speakers で調べられる。
+# 未設定なら config.yaml の tts.default_style_id が使われる
+style_id:
+# 音声パラメータのキャラ別上書き（任意。省略時は config.yaml の tts.query）
+#tts:
+#  speedScale: 1.0
+#  pitchScale: 0.0
+#  intonationScale: 1.0
+#  tempoDynamicsScale: 1.0

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -15,22 +16,20 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import mss
 import pygetwindow as gw
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
-
-from google import genai
-from google.genai import types as genai_types
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("hinalive")
+logger = logging.getLogger("hinalocal")
 
 CONFIG_PATH = Path(__file__).parent / "config.yaml"
 CHARACTERS_DIR = Path(__file__).parent / "characters"
@@ -72,7 +71,12 @@ def character_prompt_path(character_id: str, filename: str) -> Path:
 
 
 def load_character_setting(character_id: str) -> dict[str, Any]:
-    """backend/characters/<id>/setting.yaml を読み、name / voice_id を取り出す。"""
+    """backend/characters/<id>/setting.yaml を読み、name / style_id / tts を取り出す。
+
+    style_id は AivisSpeech のスタイルID（整数）。省略時は None を返し、
+    起動時に config.yaml の tts.default_style_id で補完する。
+    tts は AudioQuery パラメータ（speedScale 等）のキャラ別上書き（任意）。
+    """
     path = character_dir(character_id) / "setting.yaml"
     if not path.exists():
         raise FileNotFoundError(
@@ -81,19 +85,28 @@ def load_character_setting(character_id: str) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     name = data.get("name")
-    voice_id = data.get("voice_id")
     if not isinstance(name, str) or not name:
         raise ValueError(f"{path}: 'name' は非空文字列である必要があります")
-    if not isinstance(voice_id, str) or not voice_id:
-        raise ValueError(f"{path}: 'voice_id' は非空文字列である必要があります")
-    return {"name": name, "voice_id": voice_id}
+    style_id = data.get("style_id")
+    if style_id is not None:
+        try:
+            style_id = int(style_id)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                f"{path}: 'style_id' は AivisSpeech のスタイルID（整数）で"
+                f"指定してください: {style_id!r}"
+            ) from e
+    tts_overrides = data.get("tts") or {}
+    if not isinstance(tts_overrides, dict):
+        raise ValueError(f"{path}: 'tts' はマッピングである必要があります")
+    return {"name": name, "style_id": style_id, "tts": tts_overrides}
 
 
 def load_config() -> dict[str, Any]:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
     # --char_id で character.current_id を上書き
-    char_id_override = os.environ.get("HINALIVE_CHAR_ID")
+    char_id_override = os.environ.get("HINALOCAL_CHAR_ID")
     if char_id_override:
         cfg["character"]["current_id"] = char_id_override
         logger.info("キャラクターIDを上書き: %s", char_id_override)
@@ -105,7 +118,7 @@ def load_config() -> dict[str, Any]:
     cfg["prompts"]["character_path"] = str(
         character_prompt_path(character_id, "character.md")
     )
-    cheer_filename = os.environ.get("HINALIVE_CHEER_FILE") or "cheer.md"
+    cheer_filename = os.environ.get("HINALOCAL_CHEER_FILE") or "cheer.md"
     cheer_path = character_prompt_path(character_id, cheer_filename)
     if not cheer_path.suffix:
         cheer_path = cheer_path.with_suffix(".md")
@@ -116,12 +129,12 @@ def load_config() -> dict[str, Any]:
     cfg["prompts"]["cheer_path"] = str(cheer_path)
     logger.info("cheerプロンプト: %s", cheer_path)
 
-    window_override = os.environ.get("HINALIVE_WINDOW_TITLE")
+    window_override = os.environ.get("HINALOCAL_WINDOW_TITLE")
     if window_override:
         cfg["capture"]["window_title"] = window_override
         logger.info("ウィンドウタイトルを上書き: %s", window_override)
 
-    game_override = os.environ.get("HINALIVE_GAME_NAME")
+    game_override = os.environ.get("HINALOCAL_GAME_NAME")
     if game_override:
         cfg["game"]["name"] = game_override
         logger.info("ゲーム名を上書き: %s", game_override)
@@ -826,36 +839,222 @@ def read_prompt(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def build_gemini_client(api_key: str) -> genai.Client:
-    return genai.Client(api_key=api_key)
-
-
-def log_empty_gemini_response(label: str, model: str, response) -> None:
-    """空応答の理由（safety filterブロック / finish_reason 等）をログに出す。"""
-    pf = getattr(response, "prompt_feedback", None)
-    block_reason = getattr(pf, "block_reason", None)
-    block_message = getattr(pf, "block_reason_message", None)
-    prompt_safety = getattr(pf, "safety_ratings", None)
-    candidates = getattr(response, "candidates", None) or []
-    finish_reasons = [getattr(c, "finish_reason", None) for c in candidates]
-    finish_messages = [getattr(c, "finish_message", None) for c in candidates]
-    candidate_safety = [getattr(c, "safety_ratings", None) for c in candidates]
+def log_empty_llm_response(label: str, model: str, data: dict[str, Any]) -> None:
+    """空応答の理由（done_reason / トークン数等）をログに出す。"""
+    thinking = ((data.get("message") or {}).get("thinking") or "").strip()
     logger.warning(
-        "Gemini空応答 [%s] model=%s block_reason=%s block_message=%s "
-        "prompt_safety=%s finish_reasons=%s finish_messages=%s candidate_safety=%s",
+        "LLM空応答 [%s] model=%s done=%s done_reason=%s "
+        "prompt_eval_count=%s eval_count=%s",
         label,
         model,
-        block_reason,
-        block_message,
-        prompt_safety,
-        finish_reasons,
-        finish_messages,
-        candidate_safety,
+        data.get("done"),
+        data.get("done_reason"),
+        data.get("prompt_eval_count"),
+        data.get("eval_count"),
+    )
+    if thinking:
+        # thinking モデルに think:false を渡していないと、出力が全部 thinking 側に
+        # 流れて content が空になる。すぐ気付けるように明示的に警告する。
+        logger.warning(
+            "LLM空応答 [%s] 出力が thinking 側に入っています。"
+            "config.yaml の llm.think を false にしてください: %r",
+            label,
+            thinking[:200],
+        )
+
+
+JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+
+def parse_json_response(label: str, text: str) -> Any | None:
+    """LLM の JSON 応答をパースする。失敗時は None。
+
+    format（JSON Schema 強制）を付けていてもローカルモデルは
+    コードフェンスで包んでくることがあるため、剥がしてから読む。
+    """
+    cleaned = JSON_FENCE_RE.sub("", text.strip())
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning("%s の JSON パース失敗: %r", label, text[:200])
+        return None
+
+
+class OllamaClient:
+    """ローカルネットワーク上の Ollama サーバ（/api/chat）の薄いラッパー。
+
+    base_url は IP でも mDNS 名でもよい（例: http://192.168.1.20:11434 /
+    http://ollama-pc.local:11434）。呼び出しは同期のため、イベントループ側からは
+    asyncio.to_thread 経由で使う。
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 180.0,
+        keep_alive: str | None = None,
+        options: dict[str, Any] | None = None,
+        think: bool | str | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = httpx.Timeout(timeout_seconds, connect=10.0)
+        self.keep_alive = keep_alive
+        self.options = options or {}
+        # thinking 対応モデル（gemma4 系など）は think を指定しないと出力が
+        # message.thinking 側に流れ、content が空になる。False で思考を切る。
+        # None なら think 自体を送らない（thinking 非対応モデル向け）。
+        self.think = think
+
+    def chat(
+        self,
+        model: str,
+        user_text: str,
+        *,
+        system: str | None = None,
+        image_bytes: bytes | None = None,
+        schema: dict[str, Any] | None = None,
+        label: str = "chat",
+    ) -> str:
+        """1往復のチャットを投げて本文テキストを返す。空応答時は空文字。"""
+        user_message: dict[str, Any] = {"role": "user", "content": user_text}
+        if image_bytes is not None:
+            # Ollama の images は base64 文字列の配列（JPEG/PNG/WebP 対応）
+            user_message["images"] = [
+                base64.b64encode(image_bytes).decode("ascii")
+            ]
+        messages: list[dict[str, Any]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append(user_message)
+
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+        }
+        if self.options:
+            payload["options"] = self.options
+        if self.keep_alive:
+            payload["keep_alive"] = self.keep_alive
+        if self.think is not None:
+            payload["think"] = self.think
+        if schema is not None:
+            payload["format"] = schema
+
+        started = time.monotonic()
+        res = httpx.post(
+            f"{self.base_url}/api/chat", json=payload, timeout=self.timeout
+        )
+        res.raise_for_status()
+        data = res.json()
+        text = ((data.get("message") or {}).get("content") or "").strip()
+        logger.info(
+            "LLM応答 [%s] model=%s %.1fs in=%s out=%s",
+            label,
+            model,
+            time.monotonic() - started,
+            data.get("prompt_eval_count"),
+            data.get("eval_count"),
+        )
+        if not text:
+            log_empty_llm_response(label, model, data)
+        return text
+
+
+def build_llm_client(llm_cfg: dict[str, Any]) -> OllamaClient:
+    return OllamaClient(
+        llm_cfg["base_url"],
+        timeout_seconds=llm_cfg.get("timeout_seconds", 180),
+        keep_alive=llm_cfg.get("keep_alive"),
+        options=llm_cfg.get("options") or {},
+        think=llm_cfg.get("think"),
+    )
+
+
+class AivisSpeechClient:
+    """ローカルネットワーク上の AivisSpeech Engine のクライアント。
+
+    AivisSpeech Engine は VOICEVOX ENGINE 互換の HTTP API を持つので、
+    `/audio_query`（クエリ生成）→ `/synthesis`（合成）の2段で WAV を得る。
+    base_url は IP でも mDNS 名でもよい（例: http://192.168.1.21:10101 /
+    http://aivis-pc.local:10101）。
+    """
+
+    #: AudioQuery で上書きを許可するパラメータ（AivisSpeech がサポートするもの）
+    QUERY_PARAM_KEYS = (
+        "speedScale",
+        "pitchScale",
+        "intonationScale",
+        "volumeScale",
+        "tempoDynamicsScale",
+        "prePhonemeLength",
+        "postPhonemeLength",
+    )
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        timeout_seconds: float = 60.0,
+        query_overrides: dict[str, Any] | None = None,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.timeout = httpx.Timeout(timeout_seconds, connect=10.0)
+        self.query_overrides = query_overrides or {}
+
+    def _merge_overrides(
+        self, audio_query: dict[str, Any], extra: dict[str, Any] | None
+    ) -> dict[str, Any]:
+        merged = {**self.query_overrides, **(extra or {})}
+        for key, value in merged.items():
+            if key not in self.QUERY_PARAM_KEYS:
+                logger.warning("TTS: 未対応の AudioQuery パラメータを無視: %s", key)
+                continue
+            audio_query[key] = value
+        return audio_query
+
+    async def synthesize(
+        self,
+        text: str,
+        style_id: int,
+        *,
+        overrides: dict[str, Any] | None = None,
+    ) -> bytes:
+        """テキストを合成して WAV バイト列を返す。"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            qres = await client.post(
+                f"{self.base_url}/audio_query",
+                params={"speaker": style_id, "text": text},
+            )
+            qres.raise_for_status()
+            audio_query = self._merge_overrides(qres.json(), overrides)
+            sres = await client.post(
+                f"{self.base_url}/synthesis",
+                params={"speaker": style_id},
+                json=audio_query,
+            )
+            sres.raise_for_status()
+            return sres.content
+
+    async def speakers(self) -> Any:
+        """話者・スタイル一覧（style_id を調べる用）。"""
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            res = await client.get(f"{self.base_url}/speakers")
+            res.raise_for_status()
+            return res.json()
+
+
+def build_tts_client(tts_cfg: dict[str, Any]) -> AivisSpeechClient:
+    return AivisSpeechClient(
+        tts_cfg["base_url"],
+        timeout_seconds=tts_cfg.get("timeout_seconds", 60),
+        query_overrides=tts_cfg.get("query") or {},
     )
 
 
 def call_summarize(
-    client: genai.Client,
+    client: OllamaClient,
     model: str,
     template: str,
     history_text: str,
@@ -869,19 +1068,7 @@ def call_summarize(
         game_name=game_name,
         char_name=char_name,
     )
-    response = client.models.generate_content(
-        model=model,
-        contents=[
-            genai_types.Content(
-                role="user",
-                parts=[genai_types.Part.from_text(text=user_text)],
-            )
-        ],
-    )
-    text = (response.text or "").strip()
-    if not text:
-        log_empty_gemini_response("summarize", model, response)
-    return text
+    return client.chat(model, user_text, label="summarize")
 
 
 EMOTION_HAPPY_CHOICES = ("すごく嬉しい", "嬉しい", "普通")
@@ -892,12 +1079,12 @@ AFFECTION_CHOICES = ("すごく上がる", "上がる", "上がらない")
 
 def _emotion_schema() -> dict:
     return {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
-            "happy": {"type": "STRING", "enum": list(EMOTION_HAPPY_CHOICES)},
-            "tension": {"type": "STRING", "enum": list(EMOTION_TENSION_CHOICES)},
-            "safe": {"type": "STRING", "enum": list(EMOTION_SAFE_CHOICES)},
-            "keywords": {"type": "ARRAY", "items": {"type": "STRING"}},
+            "happy": {"type": "string", "enum": list(EMOTION_HAPPY_CHOICES)},
+            "tension": {"type": "string", "enum": list(EMOTION_TENSION_CHOICES)},
+            "safe": {"type": "string", "enum": list(EMOTION_SAFE_CHOICES)},
+            "keywords": {"type": "array", "items": {"type": "string"}},
         },
         "required": ["happy", "tension", "safe", "keywords"],
     }
@@ -905,16 +1092,16 @@ def _emotion_schema() -> dict:
 
 def _affection_schema() -> dict:
     return {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
-            "affection": {"type": "STRING", "enum": list(AFFECTION_CHOICES)},
+            "affection": {"type": "string", "enum": list(AFFECTION_CHOICES)},
         },
         "required": ["affection"],
     }
 
 
 def call_emotion_judge(
-    client: genai.Client,
+    client: OllamaClient,
     model: str,
     game_name: str,
     char_name: str,
@@ -942,28 +1129,15 @@ def call_emotion_judge(
         '"safe": "<安心|普通|不安>", '
         '"keywords": ["<キーワード1>", "<キーワード2>", ...]}'
     )
-    response = client.models.generate_content(
-        model=model,
-        contents=[
-            genai_types.Content(
-                role="user",
-                parts=[genai_types.Part.from_text(text=prompt)],
-            )
-        ],
-        config=genai_types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_emotion_schema(),
-        ),
+    text = client.chat(
+        model,
+        prompt,
+        schema=_emotion_schema(),
+        label="emotion_judge",
     )
-    text = (response.text or "").strip()
     if not text:
-        log_empty_gemini_response("emotion_judge", model, response)
         return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("感情判定の JSON パース失敗: %r", text[:200])
-        return None
+    data = parse_json_response("感情判定", text)
     if not isinstance(data, dict):
         return None
     raw_keywords = data.get("keywords")
@@ -976,7 +1150,7 @@ def call_emotion_judge(
 
 
 def call_affection_judge(
-    client: genai.Client,
+    client: OllamaClient,
     model: str,
     game_name: str,
     char_name: str,
@@ -996,28 +1170,15 @@ def call_affection_judge(
         "値は選択肢のいずれか1つの文字列のみ:\n"
         '{"affection": "<すごく上がる|上がる|上がらない>"}'
     )
-    response = client.models.generate_content(
-        model=model,
-        contents=[
-            genai_types.Content(
-                role="user",
-                parts=[genai_types.Part.from_text(text=prompt)],
-            )
-        ],
-        config=genai_types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_affection_schema(),
-        ),
+    text = client.chat(
+        model,
+        prompt,
+        schema=_affection_schema(),
+        label="affection_judge",
     )
-    text = (response.text or "").strip()
     if not text:
-        log_empty_gemini_response("affection_judge", model, response)
         return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("好感度判定の JSON パース失敗: %r", text[:200])
-        return None
+    data = parse_json_response("好感度判定", text)
     if not isinstance(data, dict):
         return None
     return data
@@ -1025,20 +1186,20 @@ def call_affection_judge(
 
 def _long_term_schema() -> dict:
     return {
-        "type": "OBJECT",
+        "type": "object",
         "properties": {
             "keywords": {
-                "type": "ARRAY",
-                "items": {"type": "STRING"},
+                "type": "array",
+                "items": {"type": "string"},
             },
-            "impression": {"type": "INTEGER"},
+            "impression": {"type": "integer", "minimum": 1, "maximum": 5},
         },
         "required": ["keywords", "impression"],
     }
 
 
 def call_long_term_extract(
-    client: genai.Client,
+    client: OllamaClient,
     model: str,
     game_name: str,
     char_name: str,
@@ -1064,28 +1225,15 @@ def call_long_term_extract(
         "必ず以下のキーを持つ JSON を返してください:\n"
         '{"keywords": ["<キーワード1>", "<キーワード2>", ...], "impression": <1-5の整数>}'
     )
-    response = client.models.generate_content(
-        model=model,
-        contents=[
-            genai_types.Content(
-                role="user",
-                parts=[genai_types.Part.from_text(text=prompt)],
-            )
-        ],
-        config=genai_types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=_long_term_schema(),
-        ),
+    text = client.chat(
+        model,
+        prompt,
+        schema=_long_term_schema(),
+        label="long_term_extract",
     )
-    text = (response.text or "").strip()
     if not text:
-        log_empty_gemini_response("long_term_extract", model, response)
         return None
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        logger.warning("長期記憶抽出の JSON パース失敗: %r", text[:200])
-        return None
+    data = parse_json_response("長期記憶抽出", text)
     if not isinstance(data, dict):
         return None
     keywords = data.get("keywords")
@@ -1105,8 +1253,8 @@ def call_long_term_extract(
     return {"keywords": keywords, "impression": impression}
 
 
-def call_gemini(
-    client: genai.Client,
+def call_message(
+    client: OllamaClient,
     model: str,
     character_prompt: str,
     cheer_prompt: str,
@@ -1142,25 +1290,13 @@ def call_gemini(
         "画像の内容も踏まえて、発話してください。"
         "出力は発話本文のみで、説明や注釈は付けないでください。"
     )
-    image_bytes = image_path.read_bytes()
-    image_part = genai_types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")
-    contents = [
-        genai_types.Content(
-            role="user",
-            parts=[image_part, genai_types.Part.from_text(text=user_text)],
-        )
-    ]
-    response = client.models.generate_content(
-        model=model,
-        contents=contents,
-        config=genai_types.GenerateContentConfig(
-            system_instruction=system_instruction,
-        ),
+    return client.chat(
+        model,
+        user_text,
+        system=system_instruction,
+        image_bytes=image_path.read_bytes(),
+        label="main",
     )
-    text = (response.text or "").strip()
-    if not text:
-        log_empty_gemini_response("main", model, response)
-    return text
 
 
 async def main_loop(app: FastAPI) -> None:
@@ -1178,7 +1314,7 @@ async def main_loop(app: FastAPI) -> None:
 
     character_prompt = read_prompt(cfg["prompts"]["character_path"])
     cheer_prompt = read_prompt(cfg["prompts"]["cheer_path"])
-    client: genai.Client = app.state.gemini_client
+    client: OllamaClient = app.state.llm_client
 
     logger.info(
         "メインループ開始: character=%s day=%s window_title=%r interval=%ss",
@@ -1250,7 +1386,7 @@ async def main_loop(app: FastAPI) -> None:
             model = app.state.model
             try:
                 message = await asyncio.to_thread(
-                    call_gemini,
+                    call_message,
                     client,
                     model,
                     character_prompt,
@@ -1263,12 +1399,12 @@ async def main_loop(app: FastAPI) -> None:
                     processed,
                 )
             except Exception:
-                logger.exception("Gemini呼び出し失敗 (model=%s)", model)
+                logger.exception("LLM呼び出し失敗 (model=%s)", model)
                 await asyncio.sleep(interval)
                 continue
 
             if not message:
-                logger.warning("Geminiが空応答を返した")
+                logger.warning("LLMが空応答を返した")
                 await asyncio.sleep(interval)
                 continue
 
@@ -1300,7 +1436,7 @@ async def run_mid_term_batch(app: FastAPI, *, force: bool = False) -> bool:
     """中期記憶を1回分作成する。
     現在のキャラ・現在の day における mid_term_memories.last_message_id の
     最大値より新しい messages を対象に、直近 window_size 件（現 day 内）を
-    flash モデルで要約して mid_term_memories に保存する。挿入時に対象レコードの
+    サブモデルで要約して mid_term_memories に保存する。挿入時に対象レコードの
     最大 id を last_message_id として記録し、続けて好感度判定も行う。
 
     通常は新規メッセージが batch_threshold 件以上のときだけ実行するが、
@@ -1315,11 +1451,11 @@ async def run_mid_term_batch(app: FastAPI, *, force: bool = False) -> bool:
     window_size = mt_cfg["window_size"]
     target_chars = mt_cfg["target_chars"]
     batch_threshold = mt_cfg["batch_threshold"]
-    flash_model = cfg["gemini"]["flash_model"]
+    sub_model = app.state.sub_model
     game_name = cfg["game"]["name"]
     char_name = app.state.character_setting["name"]
     summary_template = read_prompt(cfg["prompts"]["summary_path"])
-    client: genai.Client = app.state.gemini_client
+    client: OllamaClient = app.state.llm_client
 
     last_msg_id = await asyncio.to_thread(
         fetch_mid_term_last_message_id,
@@ -1365,7 +1501,7 @@ async def run_mid_term_batch(app: FastAPI, *, force: bool = False) -> bool:
         summary = await asyncio.to_thread(
             call_summarize,
             client,
-            flash_model,
+            sub_model,
             summary_template,
             history_text,
             target_chars,
@@ -1409,13 +1545,13 @@ async def run_mid_term_batch(app: FastAPI, *, force: bool = False) -> bool:
             ares = await asyncio.to_thread(
                 call_affection_judge,
                 client,
-                flash_model,
+                sub_model,
                 game_name,
                 char_name,
                 summary,
             )
         except Exception:
-            logger.exception("好感度判定の Gemini 呼び出しに失敗")
+            logger.exception("好感度判定の LLM 呼び出しに失敗")
             ares = None
         if ares is not None:
             a_delta = master["affection_delta"]
@@ -1480,7 +1616,7 @@ RECOLLECTION_SAMPLE_SIZE = 5
 
 async def emotion_loop(app: FastAPI) -> None:
     """感情値（happy / tension / safe）更新ループ。
-    現キャラ・現 Day の直近 30 件の会話履歴を flash モデルに渡して
+    現キャラ・現 Day の直近 30 件の会話履歴をサブモデルに渡して
     嬉しさ / テンション / 安心の変化を判定し、emotions テーブルに
     キャラマスターの delta を加減算（0-100 クランプ）で反映する。
     affection はこのループではなく中期記憶ループ側で更新する。
@@ -1489,10 +1625,10 @@ async def emotion_loop(app: FastAPI) -> None:
     db_path = cfg["database"]["path"]
     character_id = cfg["character"]["current_id"]
     current_day = app.state.current_day
-    flash_model = cfg["gemini"]["flash_model"]
+    sub_model = app.state.sub_model
     game_name = cfg["game"]["name"]
     char_name = app.state.character_setting["name"]
-    client: genai.Client = app.state.gemini_client
+    client: OllamaClient = app.state.llm_client
 
     logger.info(
         "感情ループ開始: character=%s day=%s interval=%ss history=%d",
@@ -1528,13 +1664,13 @@ async def emotion_loop(app: FastAPI) -> None:
                         result = await asyncio.to_thread(
                             call_emotion_judge,
                             client,
-                            flash_model,
+                            sub_model,
                             game_name,
                             char_name,
                             history_text,
                         )
                     except Exception:
-                        logger.exception("感情判定の Gemini 呼び出しに失敗")
+                        logger.exception("感情判定の LLM 呼び出しに失敗")
                         result = None
                     if result is not None:
                         h_delta = master["happy_delta"]
@@ -1543,6 +1679,14 @@ async def emotion_loop(app: FastAPI) -> None:
                         h_choice = result.get("happy")
                         t_choice = result.get("tension")
                         s_choice = result.get("safe")
+                        # happy / tension / safe の反映は意図的に止めている
+                        # （感情変化をコントロールするため delta を 0 固定にする）。
+                        # 判定と後段の回想更新はそのまま動かす。
+                        # 有効化するときはこの3行を外して master の delta を使う。
+                        h_delta = 0
+                        t_delta = 0
+                        s_delta = 0
+
                         if h_choice == "すごく嬉しい":
                             dh = h_delta
                         elif h_choice == "普通":
@@ -1626,11 +1770,11 @@ async def emotion_loop(app: FastAPI) -> None:
 
 def resolve_current_day(db_path: str, character_id: str) -> int:
     """起動時の current_day を決定する。
-    1. HINALIVE_DAY が指定されていればそれを int として採用
+    1. HINALOCAL_DAY が指定されていればそれを int として採用
     2. なければ messages から現キャラの最新 created_at 行の day を取得
     3. それもなければ 1
     """
-    override = os.environ.get("HINALIVE_DAY")
+    override = os.environ.get("HINALOCAL_DAY")
     if override:
         try:
             day = int(override)
@@ -1654,11 +1798,21 @@ async def lifespan(app: FastAPI):
     app.state.config = cfg
     character_id = cfg["character"]["current_id"]
     app.state.character_setting = load_character_setting(character_id)
+    style_id = app.state.character_setting["style_id"]
+    if style_id is None:
+        style_id = int(cfg["tts"]["default_style_id"])
+        logger.warning(
+            "キャラ %s に style_id が未設定のため config の tts.default_style_id "
+            "(%d) を使用します（GET /api/tts/speakers で確認できます）",
+            character_id,
+            style_id,
+        )
+    app.state.style_id = style_id
     logger.info(
-        "キャラクター設定読み込み: id=%s name=%s voice_id=%s",
+        "キャラクター設定読み込み: id=%s name=%s style_id=%s",
         character_id,
         app.state.character_setting["name"],
-        app.state.character_setting["voice_id"],
+        style_id,
     )
     init_db(cfg["database"]["path"], character_id)
     db_path = cfg["database"]["path"]
@@ -1677,9 +1831,18 @@ async def lifespan(app: FastAPI):
             "(affection は維持)",
             app.state.current_day,
         )
-    app.state.gemini_client = build_gemini_client(cfg["gemini"]["api_key"])
-    app.state.model = cfg["gemini"]["flash_model"]
-    logger.info("Geminiモデル初期化: model=%s", app.state.model)
+    app.state.llm_client = build_llm_client(cfg["llm"])
+    app.state.model = cfg["llm"]["model"]
+    # 要約・感情判定など軽い処理用のモデル。未指定ならメインモデルを使う
+    app.state.sub_model = cfg["llm"].get("sub_model") or app.state.model
+    logger.info(
+        "ローカルLLM初期化: base_url=%s model=%s sub_model=%s",
+        cfg["llm"]["base_url"],
+        app.state.model,
+        app.state.sub_model,
+    )
+    app.state.tts_client = build_tts_client(cfg["tts"])
+    logger.info("ローカルTTS初期化: base_url=%s", cfg["tts"]["base_url"])
     Path(cfg["capture"]["processing_dir"]).mkdir(parents=True, exist_ok=True)
 
     main_task = asyncio.create_task(main_loop(app))
@@ -1708,6 +1871,10 @@ class MissionUpdate(BaseModel):
     content: str
 
 
+class TtsRequest(BaseModel):
+    text: str
+
+
 @app.get("/api/messages/next")
 async def get_next_message():
     cfg = app.state.config
@@ -1732,8 +1899,48 @@ async def get_character():
     return {
         "id": cfg["character"]["current_id"],
         "name": setting["name"],
-        "voice_id": setting["voice_id"],
+        "style_id": app.state.style_id,
     }
+
+
+@app.post("/api/tts")
+async def post_tts(payload: TtsRequest):
+    """AivisSpeech Engine（別PC可）へのTTSプロキシ。WAV をそのまま返す。
+
+    フロントから直接 Engine を叩くと CORS 設定が必要になるため、
+    バックエンド経由で中継する。スタイルIDはキャラ設定から解決する。
+    """
+    text = payload.text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is empty")
+    client: AivisSpeechClient = app.state.tts_client
+    try:
+        wav = await client.synthesize(
+            text,
+            app.state.style_id,
+            overrides=app.state.character_setting["tts"],
+        )
+    except httpx.HTTPStatusError as e:
+        body = e.response.text[:200]
+        logger.error(
+            "TTS合成に失敗: status=%s body=%s", e.response.status_code, body
+        )
+        raise HTTPException(status_code=502, detail="tts synthesis failed") from e
+    except httpx.HTTPError as e:
+        logger.exception("TTSサーバに接続できません (%s)", client.base_url)
+        raise HTTPException(status_code=502, detail="tts unreachable") from e
+    return Response(content=wav, media_type="audio/wav")
+
+
+@app.get("/api/tts/speakers")
+async def get_tts_speakers():
+    """AivisSpeech Engine の話者・スタイル一覧（style_id を調べる用）。"""
+    client: AivisSpeechClient = app.state.tts_client
+    try:
+        return await client.speakers()
+    except httpx.HTTPError as e:
+        logger.exception("TTSサーバに接続できません (%s)", client.base_url)
+        raise HTTPException(status_code=502, detail="tts unreachable") from e
 
 
 @app.get("/api/mission")
@@ -1823,7 +2030,7 @@ app.mount("/", StaticFiles(directory=str(FRONTEND_DIR), html=True), name="fronte
 
 
 def run_long_term_batch(char_id: str, day: int) -> None:
-    """長期記憶バッチ：指定キャラ・day の中期記憶を 1 件ずつ Gemini に投げて
+    """長期記憶バッチ：指定キャラ・day の中期記憶を 1 件ずつローカルLLMに投げて
     キーワード（1つ以上）と印象度（1-5）を抽出し、long_term_keywords に挿入する。
     すでに同じ mid_term_memory_id でキーワードが入っている場合はスキップ（再実行安全）。
     """
@@ -1836,8 +2043,8 @@ def run_long_term_batch(char_id: str, day: int) -> None:
     char_name = char_setting["name"]
     fallback_game_name = cfg["game"]["name"]
 
-    client = build_gemini_client(cfg["gemini"]["api_key"])
-    model = cfg["gemini"]["flash_model"]
+    client = build_llm_client(cfg["llm"])
+    model = cfg["llm"].get("sub_model") or cfg["llm"]["model"]
 
     rows = fetch_mid_term_memories_by_day(db_path, char_id, day)
     if not rows:
@@ -1877,7 +2084,7 @@ def run_long_term_batch(char_id: str, day: int) -> None:
             )
         except Exception:
             logger.exception(
-                "長期記憶抽出の Gemini 呼び出しに失敗 (mid_term_id=%d)",
+                "長期記憶抽出の LLM 呼び出しに失敗 (mid_term_id=%d)",
                 mid_term_id,
             )
             failed += 1
@@ -1909,7 +2116,7 @@ def run_long_term_batch(char_id: str, day: int) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="hinalive backend")
+    parser = argparse.ArgumentParser(description="hinalocal backend")
     parser.add_argument(
         "--char_id",
         help="キャラクターIDを指定 (config.yaml の character.current_id を上書き)。"
@@ -1943,15 +2150,15 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
     if args.char_id:
-        os.environ["HINALIVE_CHAR_ID"] = args.char_id
+        os.environ["HINALOCAL_CHAR_ID"] = args.char_id
     if args.cheer:
-        os.environ["HINALIVE_CHEER_FILE"] = args.cheer
+        os.environ["HINALOCAL_CHEER_FILE"] = args.cheer
     if args.window:
-        os.environ["HINALIVE_WINDOW_TITLE"] = args.window
+        os.environ["HINALOCAL_WINDOW_TITLE"] = args.window
     if args.game:
-        os.environ["HINALIVE_GAME_NAME"] = args.game
+        os.environ["HINALOCAL_GAME_NAME"] = args.game
     if args.day is not None:
-        os.environ["HINALIVE_DAY"] = str(args.day)
+        os.environ["HINALOCAL_DAY"] = str(args.day)
 
     if args.longterm_batch:
         if not args.char_id:

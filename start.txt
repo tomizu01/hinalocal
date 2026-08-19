@@ -1,0 +1,11 @@
+python .\backend\main.py --char_id=hina --window="MagicalPrincess" --game="まじかるプリンセス" --cheer=princess --day=
+
+python \backend\main.py --char_id=mahiro --game=ゆんゆん電波シンドローム  --window=ゆんゆん電波シンドローム  --cheer=denpa
+
+python \backend\main.py --char_id=rinka --game=ゆんゆん電波シンドローム  --window=ゆんゆん電波シンドローム  --cheer=denpa
+
+
+python backend\main.py --char_id=koharu --game=ことばのパズルもじぴったんアンコール  --window="ことばのパズル もじぴったんアンコール"  --cheer=moji  --day=20260622
+
+python backend\main.py --char_id=koharu --game=MBTI性格診断  --window="無料性格診断テスト | 16Personalities — Mozilla Firefox"  --cheer=mbti  --day=2026062204
+
