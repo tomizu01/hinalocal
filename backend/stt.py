@@ -359,10 +359,54 @@ class SttEngine:
             self.ready = True
 
 
-def build_stt_engine(cfg: dict[str, Any] | None) -> SttEngine | None:
-    """config.yaml の stt セクションから SttEngine を作る。無効なら None。"""
-    stt_cfg = cfg or {}
+class _SafeDict(dict):
+    """未知のプレースホルダを空文字にして format_map を落とさないための辞書。"""
+
+    def __missing__(self, key: str) -> str:
+        logger.warning(
+            "stt.initial_prompt に未対応のプレースホルダ {%s} があります（空文字として扱います）",
+            key,
+        )
+        return ""
+
+
+def resolve_initial_prompt(
+    template: str | None, values: dict[str, str] | None
+) -> str | None:
+    """initial_prompt のプレースホルダ（{char_name} 等）を実際の値で埋める。
+
+    ゲームやキャラを起動オプションで切り替えても認識ヒントが追従するようにする。
+    テンプレート内にそのまま `{` `}` を書きたい場合は `{{` `}}` でエスケープする
+    （`prompts/summary.md` と同じ規則）。
+    """
+    if not template:
+        return None
+    try:
+        resolved = template.format_map(_SafeDict(values or {}))
+    except (IndexError, ValueError) as e:
+        logger.warning(
+            "stt.initial_prompt の書式が不正なため、そのまま使用します: %s", e
+        )
+        return template
+    return resolved.strip() or None
+
+
+def build_stt_engine(
+    cfg: dict[str, Any] | None,
+    prompt_values: dict[str, str] | None = None,
+) -> SttEngine | None:
+    """config.yaml の stt セクションから SttEngine を作る。無効なら None。
+
+    prompt_values には initial_prompt に差し込む値（char_name / char_names /
+    game_name）を渡す。
+    """
+    stt_cfg = dict(cfg or {})
     if not stt_cfg.get("enabled", True):
         logger.info("STT は無効化されています (stt.enabled: false)")
         return None
-    return SttEngine(stt_cfg)
+    stt_cfg["initial_prompt"] = resolve_initial_prompt(
+        stt_cfg.get("initial_prompt"), prompt_values
+    )
+    engine = SttEngine(stt_cfg)
+    logger.info("STT 認識ヒント (initial_prompt): %r", engine.initial_prompt)
+    return engine

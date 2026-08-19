@@ -104,6 +104,26 @@ def load_character_setting(character_id: str) -> dict[str, Any]:
     return {"name": name, "style_id": style_id, "tts": tts_overrides}
 
 
+def all_character_names() -> list[str]:
+    """characters/ 配下にいる全キャラの表示名を返す（STT の認識ヒント用）。
+
+    会話には現在のキャラ以外の名前も出てくるため、インストール済みのキャラ名を
+    まとめて initial_prompt に載せられるようにしておく。
+    """
+    names: list[str] = []
+    if not CHARACTERS_DIR.exists():
+        return names
+    for entry in sorted(CHARACTERS_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        try:
+            names.append(load_character_setting(entry.name)["name"])
+        except Exception:
+            # 設定が壊れているキャラは認識ヒントから外すだけで、起動は妨げない
+            continue
+    return names
+
+
 def load_config() -> dict[str, Any]:
     with CONFIG_PATH.open("r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
@@ -1848,7 +1868,18 @@ async def lifespan(app: FastAPI):
     # ローカルSTT（faster-whisper）。このマシンの GPU 上で動かす。
     # モデルのロードとウォームアップは数秒〜十数秒かかるので、
     # サーバ起動を待たせないようバックグラウンドタスクで進める。
-    app.state.stt_engine = build_stt_engine(cfg.get("stt"))
+    # 認識ヒント（initial_prompt）にはキャラ名とゲーム名を差し込む。
+    # 固有名詞を先に知らせておくと、その表記に寄せて認識してくれる。
+    char_name = app.state.character_setting["name"]
+    known_names = [char_name] + [n for n in all_character_names() if n != char_name]
+    app.state.stt_engine = build_stt_engine(
+        cfg.get("stt"),
+        prompt_values={
+            "char_name": char_name,
+            "char_names": "、".join(known_names),
+            "game_name": cfg["game"]["name"],
+        },
+    )
     Path(cfg["capture"]["processing_dir"]).mkdir(parents=True, exist_ok=True)
 
     main_task = asyncio.create_task(main_loop(app))

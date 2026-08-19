@@ -97,6 +97,7 @@ hinalocal/
 │   ├── main.py
 │   ├── stt.py               # ローカルSTT（faster-whisper）のモデル管理と文字起こし
 │   ├── download_stt_model.py # STTモデルの事前ダウンロード（セットアップ時のみ要ネット）
+│   ├── check_stt.py         # STTの動作診断（ドライバ/DLL/モデル/ロードを段階確認）
 │   ├── models/              # ダウンロード済みSTTモデル（.gitignore 済み、約1.6GB）
 │   │   └── large-v3-turbo/
 │   ├── config.yaml          # Ollama / AivisSpeech の接続先、モデル名、STT設定、クリップ座標 等
@@ -123,7 +124,7 @@ hinalocal/
 │           └── talk.png     # キャラ会話絵（APNG）
 ├── captures/
 │   └── processing/          # キャプチャ画像（加工後JPG）の保存フォルダ
-└── setup.ps1                # 初期設定スクリプト（PowerShell用、venv作成 + pip install）
+└── setup.ps1                # 初期設定スクリプト（venv作成 + pip install + STTモデル取得）
 ```
 
 ## キャラクター追加方法
@@ -175,7 +176,17 @@ TTS のスタイルIDはフロントには渡さず、バックエンドが `/ap
   - `stt.language` … 認識する言語（既定 `ja`）。固定すると言語判定を省けて速く、誤判定も無くなる
   - `stt.beam_size` … ビームサーチ幅（既定 5）
   - `stt.vad_filter` … 無音区間を除去してから認識するか（既定 `true`）
-  - `stt.initial_prompt` … 認識のヒント。キャラ名などの固有名詞を並べると精度が上がる
+  - `stt.initial_prompt` … 認識のヒント。固有名詞を先に知らせると、その表記に寄せて
+    認識してくれる。起動時に次のプレースホルダが埋められる（`str.format` 方式。
+    そのまま `{` `}` を書きたい場合は `{{` `}}` でエスケープする）：
+    - `{char_name}` … 現在のキャラの表示名
+    - `{char_names}` … `characters/` 配下にいる全キャラの表示名を `、` で連結（現在のキャラが先頭）
+    - `{game_name}` … `game.name`（`--game` で上書きしたときはその値）
+
+    既定値は `"{char_names}。ゲーム「{game_name}」の実況と雑談。"`。
+    `--char_id` / `--game` での切り替えに認識ヒントが自動で追従する。
+    タイトル固有の用語（アイテム名・地名など）を書き足すとさらに効く。
+    解決後の文字列は起動時に `STT 認識ヒント (initial_prompt): ...` としてログに出る
   - `stt.no_speech_threshold` / `stt.log_prob_threshold` … 無音・低信頼セグメントの棄却しきい値
   - `stt.max_upload_bytes` … `POST /api/stt` が受け付ける最大バイト数（既定 10MB）
   - `stt.hallucination_blocklist` … 既定の幻聴フィルタに追加する文字列の配列。
@@ -611,8 +622,37 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
   3. `config.yaml` の `llm.base_url` / `tts.base_url` を、Ollama と AivisSpeech Engine の接続先に設定
   4. `config.yaml` の `capture.window_title` を、プレイするゲームウィンドウのタイトル部分一致文字列に設定
   5. `backend/characters/<char_id>/setting.yaml` の `style_id` を設定（`GET /api/tts/speakers` で確認）
-  6. uvicorn 起動 → ブラウザで `http://localhost:8000` を開く
+  6. `python backend/check_stt.py` で STT が動く状態かを確認する（後述）
+  7. uvicorn 起動 → ブラウザで `http://localhost:8000` を開く
      プレイするタイトル用のプロンプトは起動オプション `--cheer <ファイル名>` で指定する
+
+## STT の動作確認・トラブルシュート
+
+`python backend/check_stt.py` で、STT が動く状態かを段階ごとに確認できる。
+GPU まわりは失敗の仕方が分かりにくい（Python の例外ではなくプロセスごと落ちることがある）ため、
+**モデルのロードは子プロセスで試し**、クラッシュしても診断を継続して終了コードから原因を推定する。
+
+確認する内容：
+
+1. NVIDIA ドライバ（`nvidia-smi`）
+2. `ctranslate2` / `faster-whisper` の import とバージョン
+3. CUDA ライブラリが **実際にどのファイルから読まれるか**（venv 外のものが読まれていれば警告）
+4. CUDA デバイス数と対応 `compute_type`
+5. `config.yaml` の `stt` 設定と、モデル実体のサイズ・SHA256
+6. 設定どおりの `device` / `compute_type` でロード＋推論
+7. 失敗した場合、`float16` / `float32` / `int8` / `cpu` を順に試して、どれなら動くかを判定
+
+別PCへ展開したときに実際に踏んだ問題は次の2つ：
+
+- **NVIDIA ドライバが古い**（R525 未満）… エラーではなくプロセスごと無言でクラッシュする。
+  ドライバを更新すると解消する
+- **`nvidia-cublas-cu12` が未導入**（`pip install` の失敗を見落としていた）…
+  ctranslate2 は cuBLAS を **最初の推論の直前** に遅延ロードするため、起動時は成功したように見え、
+  最初に喋ったときに `Library cublas64_12.dll is not found or cannot be loaded` で失敗する。
+  現在は `stt.py` が起動時にフルパスで先読みし、不足していれば対処方法つきの警告を出す
+
+なお、開発PCに CUDA Toolkit が別途入っていると、pip パッケージが不足していても
+そちらの DLL が見つかって動いてしまい、この不足に気付けない点に注意する。
 
 ## ゲームタイトルを切り替えるとき
 1. `backend/characters/<char_id>/prompts/` 配下に該当タイトル用の `.md` を用意（既存ファイルを流用または新規作成）

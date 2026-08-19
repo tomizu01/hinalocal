@@ -16,8 +16,9 @@ LLM・TTS ともに外部APIを使わず、**ローカルネットワーク内�
 - マイク・ヘッドホン推奨
 - Python 3.13
 - NVIDIA GPU（音声認識用に VRAM 2GB 以上の空き。LLM / TTS の使用分は別勘定）
-  - NVIDIA ドライバがあれば十分で、CUDA Toolkit の別途インストールは不要
-    （cuBLAS / cuDNN は `pip install` で venv 内に入る）
+  - **NVIDIA ドライバは R525 以降**（2022年11月以降のもの）。これより古いと
+    音声認識モデルのロード時にエラーではなくプロセスごとクラッシュする
+  - CUDA Toolkit の別途インストールは不要（cuBLAS / cuDNN は `pip install` で venv 内に入る）
   - GPU が無い / VRAM が足りない場合は `backend\config.yaml` の `stt.device` を `"cpu"` にするか、
     `stt.model` を `medium` / `small` に落とす
 
@@ -69,6 +70,9 @@ AivisSpeech
   - `image.clip` でウィンドウから切り出す範囲を指定（任意）
   - `stt.model_dir` に音声認識モデルの置き場所（既定 `C:/hinalocal/backend/models/large-v3-turbo`）
     - 展開先を変えた場合はここも合わせて書き換える
+  - `stt.initial_prompt` は音声認識のヒント（固有名詞を先に知らせると精度が上がる）
+    - `{char_names}` にキャラ名、`{game_name}` にゲーム名が起動時に自動で入る
+    - タイトル固有の用語（アイテム名・地名など）を書き足すとさらに効く
 - `backend\characters\<char_id>\setting.yaml`
   - `style_id` にそのキャラに使う AivisSpeech のスタイルID（未設定なら `tts.default_style_id`）
   - 必要なら `tts:` で話速・抑揚などをキャラ別に上書き
@@ -94,6 +98,11 @@ Windows PowerShell を起動し、ソースを展開したディレクトリに�
 
 Python を実行
 - `.\backend\venv\Scripts\Activate.ps1`
+- 音声認識（STT）が動く状態かを確認する（推奨）
+  - `python backend\check_stt.py`
+  - ドライバ・CUDAライブラリ・モデル・ロードまでを段階ごとに確認し、
+    最後に `すべて成功しました` と出れば OK
+  - 失敗した場合は、どの設定なら動くか（`float16` / `cpu` 等）まで判定して表示する
 - `python backend\main.py`
   - ワンショットで対象を変えたい場合は `python backend\main.py --window "Minecraft" --cheer minecraft` のように起動時オプションでも上書き可能
 
@@ -133,7 +142,8 @@ thinking 対応モデルは、`think: false` を送らないと生成がすべ�
 
 **ログに `Library cublas64_12.dll is not found or cannot be loaded`**
 GPU 実行に必要な CUDA ライブラリ（pip パッケージ）が入っていない。venv を有効化して
-`pip install -r backendequirements.txt` を実行し直す。
+`pip install -r backend
+equirements.txt` を実行し直す。
 `nvidia-cublas-cu12` は 553MB あり、ダウンロードに失敗していても
 `setup.ps1` のログを見落としがち。`pip list` に `nvidia-cublas-cu12` と
 `nvidia-cudnn-cu12` があるか確認する。

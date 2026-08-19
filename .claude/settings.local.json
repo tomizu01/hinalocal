@@ -68,7 +68,11 @@
       "PowerShell($sp=\"C:\\\\Users\\\\tomi\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--hinalocal\\\\787daf5e-bb1f-4e24-862d-3b2ddb0895cd\\\\scratchpad\"; & C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe \"$sp\\\\mkwebm.py\" \"$sp\\\\sample_ja.wav\" \"$sp\\\\sample_ja.webm\"; if \\($?\\) { & C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe \"$sp\\\\stttest.py\" \"$sp\\\\sample_ja.webm\" })",
       "PowerShell(& C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import importlib.metadata as m; print\\(m.requires\\('ctranslate2'\\)\\); print\\('---'\\); print\\(m.requires\\('faster-whisper'\\)\\)\")",
       "PowerShell($raw = Get-Content -Path C:\\\\hinalocal\\\\setup.ps1 -Encoding Default -Raw; Write-Output $raw.Substring\\($raw.IndexOf\\(\"# STT\"\\)\\))",
-      "PowerShell(Get-Content *)"
+      "PowerShell(Get-Content *)",
+      "Bash(sed -n '/^## ZIPでの配布/,/^## ゲームタイトルを切り替えるとき/p' hinalocal.md)",
+      "Bash(sed -n '/^Python を実行/,/^# ゲームタイトル/p' README.md)",
+      "Bash(sed -n '/^## ゲームPC/,/^## 推論PC/p' README.md)",
+      "Bash(sed -n '/^音声認識（STT）が動く状態か確認する/,/^ブラウザでアクセス/p' README.md)"
     ]
   }
 }
