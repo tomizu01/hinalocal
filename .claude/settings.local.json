@@ -55,7 +55,20 @@
       "Bash(sed -n '/^## 画面構成/,/^### デイミッションUI挙動/p' hinalocal.md)",
       "Bash(sed -n '/^## ZIPでの配布/,/^## 開発環境について/p' hinalocal.md)",
       "Bash(./venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
-      "Bash(./backend/venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('backend/main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")"
+      "Bash(./backend/venv/Scripts/python.exe -c \"import ast; ast.parse\\(open\\('backend/main.py',encoding='utf-8'\\).read\\(\\)\\); print\\('syntax OK'\\)\")",
+      "PowerShell(nvidia-smi *)",
+      "PowerShell(& C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe -m pip index versions ctranslate2; Write-Output \"---\"; & C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe -m pip index versions faster-whisper)",
+      "PowerShell(& C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe \"C:\\\\Users\\\\tomi\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--hinalocal\\\\787daf5e-bb1f-4e24-862d-3b2ddb0895cd\\\\scratchpad\\\\gputest.py\")",
+      "PowerShell(& C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"from faster_whisper.utils import _MODELS; [print\\(k, '->', v\\) for k,v in _MODELS.items\\(\\)]\")",
+      "PowerShell(& C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe C:\\\\hinalocal\\\\backend\\\\download_stt_model.py --model large-v3-turbo 2>&1 | Select-Object -Last 15)",
+      "PowerShell(try { $r = Invoke-WebRequest -Uri \"http://localhost:10101/version\" -TimeoutSec 3 -UseBasicParsing; Write-Output \"AivisSpeech OK: $\\($r.Content\\)\" } catch { Write-Output \"AivisSpeech NG: $\\($_.Exception.Message\\)\" })",
+      "PowerShell(Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.GetInstalledVoices\\(\\) | ForEach-Object { $_.VoiceInfo.Name + \" / \" + $_.VoiceInfo.Culture })",
+      "PowerShell(Get-Item *)",
+      "PowerShell($sp=\"C:\\\\Users\\\\tomi\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--hinalocal\\\\787daf5e-bb1f-4e24-862d-3b2ddb0895cd\\\\scratchpad\"; & C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe \"$sp\\\\stttest.py\" \"$sp\\\\sample_ja.wav\")",
+      "PowerShell($sp=\"C:\\\\Users\\\\tomi\\\\AppData\\\\Local\\\\Temp\\\\claude\\\\C--hinalocal\\\\787daf5e-bb1f-4e24-862d-3b2ddb0895cd\\\\scratchpad\"; & C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe \"$sp\\\\mkwebm.py\" \"$sp\\\\sample_ja.wav\" \"$sp\\\\sample_ja.webm\"; if \\($?\\) { & C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe \"$sp\\\\stttest.py\" \"$sp\\\\sample_ja.webm\" })",
+      "PowerShell(& C:\\\\hinalocal\\\\backend\\\\venv\\\\Scripts\\\\python.exe -c \"import importlib.metadata as m; print\\(m.requires\\('ctranslate2'\\)\\); print\\('---'\\); print\\(m.requires\\('faster-whisper'\\)\\)\")",
+      "PowerShell($raw = Get-Content -Path C:\\\\hinalocal\\\\setup.ps1 -Encoding Default -Raw; Write-Output $raw.Substring\\($raw.IndexOf\\(\"# STT\"\\)\\))",
+      "PowerShell(Get-Content *)"
     ]
   }
 }

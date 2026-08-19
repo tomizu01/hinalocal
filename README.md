@@ -4,6 +4,7 @@
 汎用ゲーム実況支援AIコンパニオンです（自宅・個人利用向け）。
 
 LLM・TTS ともに外部APIを使わず、**ローカルネットワーク内の Ollama と AivisSpeech Engine** で動きます。
+音声入力（STT）も **ゲームPC上の faster-whisper** で処理するため、インターネットに繋がっていなくても動きます。
 
 詳細仕様は `hinalocal.md` を参照してください。
 
@@ -14,6 +15,11 @@ LLM・TTS ともに外部APIを使わず、**ローカルネットワーク内�
 - Chrome Desktop ブラウザ
 - マイク・ヘッドホン推奨
 - Python 3.13
+- NVIDIA GPU（音声認識用に VRAM 2GB 以上の空き。LLM / TTS の使用分は別勘定）
+  - NVIDIA ドライバがあれば十分で、CUDA Toolkit の別途インストールは不要
+    （cuBLAS / cuDNN は `pip install` で venv 内に入る）
+  - GPU が無い / VRAM が足りない場合は `backend\config.yaml` の `stt.device` を `"cpu"` にするか、
+    `stt.model` を `medium` / `small` に落とす
 
 ## 推論PC（LLM / TTS を動かす側。ゲームPCと同一でも可）
 - [Ollama](https://ollama.com/)（vision 対応モデル。既定は `gemma4:26b`）
@@ -61,6 +67,8 @@ AivisSpeech
     （起動後に `http://localhost:8000/api/tts/speakers` を開くと一覧が確認できる）
   - `capture.window_title` にプレイするゲームのウィンドウタイトル（部分一致）を指定
   - `image.clip` でウィンドウから切り出す範囲を指定（任意）
+  - `stt.model_dir` に音声認識モデルの置き場所（既定 `C:/hinalocal/backend/models/large-v3-turbo`）
+    - 展開先を変えた場合はここも合わせて書き換える
 - `backend\characters\<char_id>\setting.yaml`
   - `style_id` にそのキャラに使う AivisSpeech のスタイルID（未設定なら `tts.default_style_id`）
   - 必要なら `tts:` で話速・抑揚などをキャラ別に上書き
@@ -77,6 +85,10 @@ AivisSpeech
 
 Windows PowerShell を起動し、ソースを展開したディレクトリに移動して初期設定スクリプトを実行する
 - `.\setup.ps1`
+  - venv 作成 → `pip install` → **音声認識モデル（約1.6GB）のダウンロード** まで行う
+  - モデルの取得にはインターネット接続が必要（**取得後は不要**。以後オフラインで動く）
+  - モデルだけ入れ直したいときは `python backend\download_stt_model.py`
+    （`--model medium` のようにモデルを変更、`--list` で一覧表示）
 - スクリプトが実行できない場合は下記コマンドを実行する
   - `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`
 
@@ -113,6 +125,38 @@ thinking 対応モデルは、`think: false` を送らないと生成がすべ�
 モデルのロード時間。`llm.keep_alive` の間は常駐するので2回目以降は数秒になる。
 毎回遅い場合は `ollama ps` で `CPU/GPU` の分割を確認する。CPU 側の割合が大きいなら
 モデルが VRAM に収まっていないので、より小さいモデル／量子化を選ぶ。
+
+**マイクボタンが「準備中...」のまま押せない**
+音声認識モデルのロード中（数秒〜十数秒）。それ以上待っても変わらない場合はサーバのログを見る。
+`STT モデルが見つかりません` なら `python backend\download_stt_model.py` でモデルを取得し、
+`backend\config.yaml` の `stt.model_dir` が実際の置き場所と一致しているか確認する。
+
+**ログに `Library cublas64_12.dll is not found or cannot be loaded`**
+GPU 実行に必要な CUDA ライブラリ（pip パッケージ）が入っていない。venv を有効化して
+`pip install -r backendequirements.txt` を実行し直す。
+`nvidia-cublas-cu12` は 553MB あり、ダウンロードに失敗していても
+`setup.ps1` のログを見落としがち。`pip list` に `nvidia-cublas-cu12` と
+`nvidia-cudnn-cu12` があるか確認する。
+
+**起動直後に無言でプロセスが終了する（トレースバックも出ない）**
+CUDA / cuDNN 側のネイティブクラッシュ。まず NVIDIA ドライバを最新にする
+（R525 以降が必要。古いドライバではエラーではなくプロセスごと落ちる）。
+`python backend\check_stt.py` を実行すると、ドライバ・DLL・モデル・ロードを
+段階ごとに確認し、どの設定なら動くかまで切り分けてくれる。
+
+**音声入力が使えない / ログに `GPU ロードに失敗`**
+`nvidia-smi` で GPU とドライバを確認する。VRAM が足りない場合は `stt.model` を
+`medium` / `small` に落とすか、`stt.device` を `"cpu"` にする（CPU では1発話に数秒〜十数秒かかる）。
+CPU でも遅すぎる場合は `stt.enabled: false` にすればテキスト入力だけで運用できる。
+
+**喋っていないのに「ご視聴ありがとうございました」等が入力される**
+Whisper が無音・環境音に対して出す典型的な幻聴。既定でフィルタしているが、
+別のパターンが出たら `backend\config.yaml` の `stt.hallucination_blocklist` に追加する。
+そもそも拾いにくくするには `frontend\config.js` の `stt.vadMinRms` を上げる。
+
+**録音がなかなか終わらない / すぐ切れる**
+`frontend\config.js` の `stt.silenceEndMs`（無音何msで打ち切るか）と
+`stt.vadNoiseMultiplier` / `stt.vadMinRms`（どの音量から発話とみなすか）を調整する。
 
 **TTS が鳴らない（ログに `tts unreachable`）**
 AivisSpeech Engine が起動しているか、`tts.base_url` が正しいかを確認する。

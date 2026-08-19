@@ -15,6 +15,9 @@ backend/*.db-shm
 backend/config.yaml
 frontend/config.js
 
+# STT models (downloaded by backend/download_stt_model.py, ~1.6GB)
+backend/models/
+
 # Large character image assets (managed outside repo)
 
 # Game capture images (local-only)

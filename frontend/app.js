@@ -51,21 +51,11 @@
 
   let autoMicEnabled = false;
   let micActive = false;
-  let recognition = null;
+  let sttEnabled = true;
+  let sttReady = false;
 
   function setStatus(text) {
     statusEl.textContent = text || "";
-  }
-
-  function buildSpeechRecognition() {
-    const Ctor = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!Ctor) return null;
-    const r = new Ctor();
-    r.lang = "ja-JP";
-    r.interimResults = true;
-    r.maxAlternatives = 1;
-    r.continuous = false;
-    return r;
   }
 
   async function tryMissionCommand(text) {
@@ -199,53 +189,304 @@
     }
   }
 
-  function startMic() {
-    if (micActive) return;
-    if (!recognition) {
-      recognition = buildSpeechRecognition();
-      if (!recognition) {
-        setStatus("このブラウザは音声認識に未対応");
-        return;
+  // ---- 音声入力（ローカルSTT）--------------------------------------------
+  // Web Speech API は音声を外部サーバ（Google）へ送るためオフラインでは使えない。
+  // 代わりに MediaRecorder で録音し、バックエンドの /api/stt へ送って
+  // このマシンの GPU 上の faster-whisper で文字起こしする。
+  // 録音の切り上げ（発話の終わり検出）はブラウザ側の簡易VAD（音量ベース）で行う。
+  //
+  // VAD は **AudioWorklet（音声スレッド）** で動かす。setInterval で音量を見る作りだと、
+  // ゲームを前面にしてブラウザがバックグラウンドになった瞬間 Chrome のタイマー間引き
+  // （1秒に1回）が効いて、無音検出が数十倍遅くなり録音が終わらなくなる。
+  // 音声スレッドは間引かれず、経過時間もサンプル数から正確に出せる。
+
+  // AudioWorklet に読み込ませる VAD 本体（Blob URL 経由で addModule する）。
+  const VAD_WORKLET_SRC = `
+class HinalocalVad extends AudioWorkletProcessor {
+  constructor(options) {
+    super();
+    const o = options.processorOptions;
+    const toSamples = (ms) => (ms / 1000) * sampleRate;
+    this.speechStartTimeout = toSamples(o.speechStartTimeoutMs);
+    this.silenceEnd = toSamples(o.silenceEndMs);
+    this.maxRecord = toSamples(o.maxRecordMs);
+    this.minSpeech = toSamples(o.minSpeechMs);
+    this.multiplier = o.vadNoiseMultiplier;
+    this.minRms = o.vadMinRms;
+    this.total = 0;
+    this.speech = 0;
+    this.silence = 0;
+    this.speaking = false;
+    this.floor = null;
+    this.done = false;
+  }
+
+  process(inputs) {
+    if (this.done) return false;
+    const ch = inputs[0] && inputs[0][0];
+    const n = ch ? ch.length : 128;
+    let rms = 0;
+    if (ch) {
+      let sum = 0;
+      for (let i = 0; i < ch.length; i += 1) sum += ch[i] * ch[i];
+      rms = Math.sqrt(sum / ch.length);
+    }
+    if (this.floor === null) this.floor = rms;
+    const threshold = Math.max(this.floor * this.multiplier, this.minRms);
+    this.total += n;
+
+    if (rms > threshold) {
+      this.speaking = true;
+      this.speech += n;
+      this.silence = 0;
+    } else {
+      // 喋っていない間だけ暗騒音の推定値をゆっくり更新する（時定数 約0.5秒）
+      this.floor = this.floor * 0.994 + rms * 0.006;
+      if (this.speaking) this.silence += n;
+    }
+
+    let reason = null;
+    if (!this.speaking && this.total >= this.speechStartTimeout) reason = "timeout";
+    else if (this.speaking && this.silence >= this.silenceEnd) reason = "silence";
+    else if (this.total >= this.maxRecord) reason = "max";
+    if (reason) {
+      this.done = true;
+      this.port.postMessage({
+        reason,
+        accepted: this.speaking && this.speech >= this.minSpeech,
+        speechMs: (this.speech / sampleRate) * 1000,
+      });
+      return false;
+    }
+    return true;
+  }
+}
+registerProcessor("hinalocal-vad", HinalocalVad);
+`;
+
+  let mediaStream = null;
+  let audioCtx = null;
+  let micSource = null;
+  let silentGain = null;
+  let vadModuleReady = false;
+  let activeRecording = null;
+
+  function pickMimeType() {
+    const candidates = [
+      "audio/webm;codecs=opus",
+      "audio/webm",
+      "audio/ogg;codecs=opus",
+    ];
+    for (const t of candidates) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(t)) return t;
+    }
+    return "";
+  }
+
+  // マイクは一度掴んだら開いたままにする（毎回開き直すと録音開始が遅れるため）。
+  async function ensureMicStream() {
+    if (mediaStream && mediaStream.active) {
+      if (audioCtx && audioCtx.state === "suspended") await audioCtx.resume();
+      return mediaStream;
+    }
+    mediaStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === "suspended") await audioCtx.resume();
+    micSource = audioCtx.createMediaStreamSource(mediaStream);
+    // VAD ノードの出力先。音量0で destination に繋いでおくことで、
+    // グラフが確実に処理され続ける（どこにも繋がないと処理されない場合がある）。
+    silentGain = audioCtx.createGain();
+    silentGain.gain.value = 0;
+    silentGain.connect(audioCtx.destination);
+
+    if (!vadModuleReady) {
+      const url = URL.createObjectURL(
+        new Blob([VAD_WORKLET_SRC], { type: "application/javascript" })
+      );
+      try {
+        await audioCtx.audioWorklet.addModule(url);
+        vadModuleReady = true;
+      } finally {
+        URL.revokeObjectURL(url);
       }
     }
+    return mediaStream;
+  }
+
+  /**
+   * 1発話ぶんを録音して Blob を返す。発話が無かった場合は null。
+   * 発話の開始・終了判定は AudioWorklet 側（VAD_WORKLET_SRC）が行い、
+   * 判定結果が1回だけ postMessage で返ってくる。
+   * しきい値は暗騒音（無音時の音量）に追従させ、環境ごとのマイク感度差を吸収する。
+   */
+  function recordUtterance(stream) {
+    const s = cfg.stt;
+    const mimeType = pickMimeType();
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    const chunks = [];
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size) chunks.push(e.data);
+    };
+
+    const vad = new AudioWorkletNode(audioCtx, "hinalocal-vad", {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      processorOptions: {
+        speechStartTimeoutMs: s.speechStartTimeoutMs,
+        silenceEndMs: s.silenceEndMs,
+        maxRecordMs: s.maxRecordMs,
+        minSpeechMs: s.minSpeechMs,
+        vadNoiseMultiplier: s.vadNoiseMultiplier,
+        vadMinRms: s.vadMinRms,
+      },
+    });
+    micSource.connect(vad);
+    vad.connect(silentGain);
+
+    return new Promise((resolve) => {
+      let settled = false;
+
+      const finish = (accepted) => {
+        if (settled) return;
+        settled = true;
+        activeRecording = null;
+        clearTimeout(guard);
+        try {
+          micSource.disconnect(vad);
+          vad.disconnect();
+        } catch (e) {
+          console.warn("VADノードの切断に失敗", e);
+        }
+        recorder.onstop = () => {
+          resolve(
+            accepted
+              ? new Blob(chunks, { type: recorder.mimeType || mimeType || "audio/webm" })
+              : null
+          );
+        };
+        try {
+          recorder.stop();
+        } catch (e) {
+          console.warn("recorder.stop() 失敗", e);
+          resolve(null);
+        }
+      };
+
+      vad.port.onmessage = (e) => {
+        const d = e.data || {};
+        console.log("VAD判定", d);
+        finish(Boolean(d.accepted));
+      };
+
+      // AudioWorklet からの通知が来なかったときの保険（タイマーは間引かれ得るので余裕を持つ）
+      const guard = setTimeout(() => {
+        console.warn("VADからの通知が無かったため録音を打ち切ります");
+        finish(true);
+      }, s.maxRecordMs + 10000);
+
+      // マイクボタンの押し直しで即座に締めるためのハンドル
+      activeRecording = { stop: () => finish(true) };
+      recorder.start(200);
+    });
+  }
+
+  async function transcribe(blob) {
+    const res = await fetch("/api/stt", {
+      method: "POST",
+      headers: { "Content-Type": blob.type || "application/octet-stream" },
+      body: blob,
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`STT ${res.status}: ${body.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    return (data.text || "").trim();
+  }
+
+  async function startMic() {
+    if (micActive) return;
+    if (!sttEnabled) {
+      setStatus("音声入力は無効です");
+      return;
+    }
     micActive = true;
-    setStatus("🎤 録音中...");
-    let resultText = "";
-    recognition.onresult = (event) => {
-      let combined = "";
-      for (let i = 0; i < event.results.length; i += 1) {
-        const r = event.results[i];
-        if (r && r[0]) combined += r[0].transcript || "";
-      }
-      resultText = combined;
-      console.log("speech onresult", { combined, isFinal: event.results[event.results.length - 1]?.isFinal });
-      if (combined) setLastPlayer(combined);
-    };
-    recognition.onerror = (event) => {
-      console.warn("speech error", event.error);
-      setStatus(`音声認識エラー: ${event.error}`);
-    };
-    recognition.onend = async () => {
-      micActive = false;
-      setStatus("");
-      const t = resultText.trim();
-      console.log("speech onend", { resultText: t });
-      if (t) {
-        playerInput.value = "";
-        setLastPlayer(t);
-        await postPlayer(t);
-      }
-    };
     try {
-      recognition.start();
-    } catch (e) {
-      micActive = false;
+      let stream;
+      try {
+        stream = await ensureMicStream();
+      } catch (e) {
+        console.error("マイクの取得に失敗", e);
+        setStatus("マイクを使用できません");
+        return;
+      }
+
+      setStatus("🎤 録音中...");
+      const blob = await recordUtterance(stream);
+      if (!blob) {
+        setStatus("");
+        return;
+      }
+
+      setStatus("認識中...");
+      let text = "";
+      try {
+        text = await transcribe(blob);
+      } catch (e) {
+        console.error("音声認識に失敗", e);
+        setStatus("音声認識に失敗しました");
+        return;
+      }
       setStatus("");
-      console.warn("recognition.start() 失敗", e);
+      if (!text) return;
+      playerInput.value = "";
+      setLastPlayer(text);
+      await postPlayer(text);
+    } finally {
+      micActive = false;
+    }
+  }
+
+  // モデルのロードが終わるまでマイクを押せないようにする（ロード中は数秒〜十数秒）
+  async function pollSttStatus() {
+    while (true) {
+      try {
+        const res = await fetch("/api/stt/status");
+        if (res.ok) {
+          const data = await res.json();
+          sttEnabled = Boolean(data.enabled);
+          sttReady = Boolean(data.enabled && data.ready);
+          if (!sttEnabled) {
+            micBtn.disabled = true;
+            autoBtn.disabled = true;
+            micBtn.textContent = "🎤 音声入力（無効）";
+            return;
+          }
+          micBtn.disabled = !sttReady;
+          autoBtn.disabled = !sttReady;
+          micBtn.textContent = sttReady ? "🎤 音声入力" : "🎤 準備中...";
+          if (sttReady) return;
+        }
+      } catch (e) {
+        console.warn("STT状態の取得に失敗", e);
+      }
+      await sleep(2000);
     }
   }
 
   micBtn.addEventListener("click", () => {
+    if (micActive) {
+      // 録音中にもう一度押したら、無音を待たずにその場で確定する
+      if (activeRecording) activeRecording.stop();
+      return;
+    }
     startMic();
   });
 
@@ -337,6 +578,11 @@
   shutdownBtn.addEventListener("click", shutdown);
 
   fetchMission();
+  // STT モデルのロード完了までマイク系ボタンを無効にしておく
+  micBtn.disabled = true;
+  autoBtn.disabled = true;
+  micBtn.textContent = "🎤 準備中...";
+  pollSttStatus();
 
   playerForm.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -356,7 +602,7 @@
           continue;
         }
         await speakAndShow(data.content);
-        if (autoMicEnabled) {
+        if (autoMicEnabled && sttReady) {
           await sleep(cfg.autoMicGuardMs);
           startMic();
         }

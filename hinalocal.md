@@ -4,16 +4,21 @@
 バックグラウンドで常に稼働しており、キャラ表示や音声再生はブラウザから行う。
 プレイヤーは音声 or テキストで AI と会話でき、ゲームプレイの相棒として横で盛り上がってくれる。
 
-メッセージ生成・TTS ともに **外部APIを使わず、ローカルネットワーク内で完結** させる。
+メッセージ生成・TTS・音声認識（STT）のいずれも **外部APIを使わず、ローカルネットワーク内で完結** させる。
 - メッセージ生成：**Ollama**（既定モデル `gemma4:26b`。画面キャプチャを送るため vision 対応必須）
 - TTS：**AivisSpeech Engine**（VOICEVOX ENGINE 互換 HTTP API、既定ポート 10101）
+- STT：**faster-whisper**（既定モデル `large-v3-turbo`。**本アプリを動かすマシンの GPU 上**で直接動かす）
+
+STT だけは HTTP 越しではなくバックエンドのプロセス内でモデルを動かすため、
+Ollama / AivisSpeech と違い LAN 上の別マシンには置けない（ゲームPC側に GPU が必要）。
+モデルはセットアップ時にローカルへ取得しておき、実行時は外部ネットワークへ一切接続しない。
 
 自宅用・自分用ソフトであり、インターネットに公開されることはない。
 稼働環境もローカルネットワーク内でのみ稼働させる。
 
 ## 構成（2台構成を前提）
 
-- **ゲームPC**：ゲーム本体 ＋ 本アプリ（FastAPI ＋ ブラウザ）を動かす
+- **ゲームPC**：ゲーム本体 ＋ 本アプリ（FastAPI ＋ ブラウザ）＋ **STT（faster-whisper）** を動かす
 - **推論PC**：Ollama ＋ AivisSpeech Engine を動かす
 - 両者はローカルネットワークで通信する。接続先は `backend/config.yaml` に
   **IPアドレスでも mDNS 名（`*.local`）でも** 指定できる
@@ -46,6 +51,11 @@ TTS はブラウザから直接叩かず **バックエンド（`POST /api/tts`�
 ## ゲームPC（本アプリを動かす側）
 - Windows 11
 - スピーカーとマイクがあること（エコー対策のためヘッドセット推奨）
+- **NVIDIA GPU（STT 用に VRAM 2GB 以上の空きが必要。LLM / TTS の使用分は別勘定）**
+  - 既定の `large-v3-turbo` ＋ `int8_float16` で実測 約1.4GB（CUDAコンテキスト込み）
+  - 足りない場合は `stt.model` を `medium` / `small` に落とすか、`stt.device: "cpu"` にする
+  - CUDA ライブラリ（cuBLAS / cuDNN）は pip 経由で venv 内に入るため、
+    CUDA Toolkit の別途インストールは不要（NVIDIA ドライバのみ必要）
 - ブラウザは Google Chrome Desktop
 - ゲームは特定タイトルに依存しない（Windows 上で表示されるウィンドウであれば何でも）
 - 画面キャプチャは外部ソフト不要。Python 側で `mss` + `pygetwindow` を用いて、対象ウィンドウを直接取得する
@@ -66,12 +76,18 @@ TTS はブラウザから直接叩かず **バックエンド（`POST /api/tts`�
 - uvicorn（ローカルサーバ、ポート 8000、http）
 - SQLite3
 - httpx（Ollama / AivisSpeech Engine への HTTP 呼び出し）
-- 使用AIモデル：Ollama の `gemma4:26b`（`config.yaml` の `llm.model` で変更可）
+- faster-whisper（STT。CTranslate2 バックエンドで GPU 実行。音声デコードは同梱の PyAV が行うので ffmpeg の別途導入は不要）
+- 使用AIモデル：Ollama の `gemma4:26b`（`config.yaml` の `llm.model` で変更可）／
+  STT は faster-whisper の `large-v3-turbo`（`config.yaml` の `stt.model` で変更可）
 
 ## フロントエンド
 - HTML / CSS / JavaScript（素のJS）
-- Web Speech API（音声入力）
+- MediaRecorder ＋ AudioWorklet（音声入力の録音と発話区間の判定）
+- バックエンドの `POST /api/stt`（STT。実体はローカルの faster-whisper）
 - バックエンドの `POST /api/tts`（TTS。実体は AivisSpeech Engine）
+
+※ 以前は音声入力に Web Speech API を使っていたが、認識のために音声を Google の
+サーバへ送るため **オフラインでは動作しない**。ローカル完結の方針に合わせて廃止した。
 
 # フォルダ構成
 
@@ -79,7 +95,11 @@ TTS はブラウザから直接叩かず **バックエンド（`POST /api/tts`�
 hinalocal/
 ├── backend/
 │   ├── main.py
-│   ├── config.yaml          # Ollama / AivisSpeech の接続先、モデル名、クリップ座標 等
+│   ├── stt.py               # ローカルSTT（faster-whisper）のモデル管理と文字起こし
+│   ├── download_stt_model.py # STTモデルの事前ダウンロード（セットアップ時のみ要ネット）
+│   ├── models/              # ダウンロード済みSTTモデル（.gitignore 済み、約1.6GB）
+│   │   └── large-v3-turbo/
+│   ├── config.yaml          # Ollama / AivisSpeech の接続先、モデル名、STT設定、クリップ座標 等
 │   ├── prompts/
 │   │   └── summary.md       # 中期記憶要約テンプレ（キャラ非依存）
 │   ├── characters/
@@ -142,6 +162,25 @@ TTS のスタイルIDはフロントには渡さず、バックエンドが `/ap
   - `tts.query` … AudioQuery の既定パラメータ（`speedScale` / `pitchScale` /
     `intonationScale` / `volumeScale` / `tempoDynamicsScale` / `prePhonemeLength` / `postPhonemeLength`）。
     キャラ別に `setting.yaml` の `tts:` で上書き可。ここに無いキーは警告ログを出して無視する
+- ローカルSTT設定（`stt`）… **このマシンの GPU 上で動く faster-whisper の設定**
+  - `stt.enabled` … `false` で音声入力を無効化（テキスト入力のみになる）
+  - `stt.model` … モデル名（既定 `large-v3-turbo`）。一覧は
+    `python backend\download_stt_model.py --list` で確認できる
+  - `stt.model_dir` … 事前ダウンロードしたモデルの置き場所。**設定されている間は
+    `local_files_only=True` で読むため、実行時にインターネット接続が不要**。
+    空にすると Hugging Face から取得を試みる（＝初回のみ要インターネット）
+  - `stt.device` / `stt.device_index` … `cuda` または `cpu` と GPU 番号
+  - `stt.compute_type` … 量子化方式（既定 `int8_float16`。VRAM を減らせて精度低下はごく僅か）
+  - `stt.fallback_to_cpu` … GPU ロードに失敗したとき CPU で動かすか（既定 `true`）
+  - `stt.language` … 認識する言語（既定 `ja`）。固定すると言語判定を省けて速く、誤判定も無くなる
+  - `stt.beam_size` … ビームサーチ幅（既定 5）
+  - `stt.vad_filter` … 無音区間を除去してから認識するか（既定 `true`）
+  - `stt.initial_prompt` … 認識のヒント。キャラ名などの固有名詞を並べると精度が上がる
+  - `stt.no_speech_threshold` / `stt.log_prob_threshold` … 無音・低信頼セグメントの棄却しきい値
+  - `stt.max_upload_bytes` … `POST /api/stt` が受け付ける最大バイト数（既定 10MB）
+  - `stt.hallucination_blocklist` … 既定の幻聴フィルタに追加する文字列の配列。
+    Whisper は無音・環境音に対して「ご視聴ありがとうございました」等を出しやすいため、
+    `stt.py` の `DEFAULT_HALLUCINATIONS` と合わせて完全一致で捨てる
 - 対象ウィンドウタイトル（部分一致、`capture.window_title`）
 - 加工後画像の保存フォルダ（`capture.processing_dir`）
 - キャプチャ画像のクリップ座標（ウィンドウ左上原点。すべて0なら無効）
@@ -184,6 +223,12 @@ TTS のスタイルIDはフロントには渡さず、バックエンドが `/ap
 
 ## frontend/config.js
 - `tts.audioMaxMs` … 再生開始から強制停止するまでの ms（ハルシネーション対策）
+- `stt.speechStartTimeoutMs` … 録音開始後これだけ無音が続いたら「喋らなかった」として取り消す（ms）
+- `stt.silenceEndMs` … 発話が始まったあと、これだけ無音が続いたら録音を終了する（ms）
+- `stt.maxRecordMs` … 1回の録音の上限（ms）
+- `stt.minSpeechMs` … これより短い発話は物音の誤検知として捨てる（ms）
+- `stt.vadNoiseMultiplier` … 暗騒音の何倍を超えたら「喋っている」とみなすか
+- `stt.vadMinRms` … 暗騒音がとても小さい環境向けの下限しきい値（RMS 0.0-1.0）
 - `typewriterCharsPerSecond` … タイプライター表示速度（文字/秒。既定 7）
 - `pollIntervalMs` … `/api/messages/next` のポーリング間隔（ms）
 - `autoMicGuardMs` … 自動マイクON時、再生終了後にマイクを開くまでのガード時間（ms）
@@ -211,6 +256,12 @@ TTS のスタイルIDはフロントには渡さず、バックエンドが `/ap
 1. **メインループ**：キャプチャ → 応援メッセージ生成
 2. **中期記憶ループ**：会話履歴の要約バッチ（独立した間隔で動く）。要約挿入後に好感度（affection）の判定も行う
 3. **感情ループ**：直近会話履歴から happy / tension / safe の変化を判定し emotions を更新（60秒間隔）
+
+加えて、`stt.enabled` が真のときは **STT モデルのロード＋ウォームアップ** も
+バックグラウンドタスクとして起動直後に1回だけ走らせる（サーバの起動を待たせないため）。
+初回推論は GPU カーネルの初期化で十数秒かかることがあるので、ここで無音を1秒流して
+消化しておき、最初の発話だけ極端に待たされるのを防ぐ。ロードに失敗した場合も
+ログを残して起動は継続する（音声入力だけが使えない状態になる）。
 
 DB操作（会話履歴・各種記憶テーブル）はすべて `character.current_id` を WHERE 条件に含み、
 現在のキャラクターに紐づくレコードだけを読み書きする。
@@ -351,6 +402,25 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 - 返却と同時に、そのレコードの未再生フラグを「再生済」に更新（取得時即マーク方式）
 - 未再生メッセージがない場合は空レスポンス
 - 取りこぼし許容（エラー多発時に2段階フラグ化を再検討）
+
+### POST /api/stt  （音声認識API＝ローカル faster-whisper）
+- リクエスト: 録音した音声データを **リクエストボディにそのまま**（`audio/webm` 等）。
+  マルチパートではないので `python-multipart` は不要
+- レスポンス: `{"text": "<認識結果>"}`（認識できなければ空文字）
+- 処理はこのマシンの GPU 上の faster-whisper で行い、**外部へは一切送らない**
+- 会話履歴への保存はここでは行わない。フロントは結果テキストを従来どおり
+  `POST /api/messages/player` に送る（誤認識補正・ミッションコマンドはそちらで効く）
+- ボディが空なら 400、音声としてデコードできなければ 400、
+  モデル未ロード・推論失敗なら 503、`stt.max_upload_bytes` 超過なら 413
+- モデルのロード中に来たリクエストは（エラーにせず）ロード完了まで待たされる。
+  推論は `asyncio.Lock` で1件ずつ直列に処理する
+
+### GET /api/stt/status  （STT状態取得API）
+- レスポンス: `{"enabled": <bool>, "ready": <bool>, "model": ..., "device": ..., "compute_type": ...}`
+- フロントは起動時にこれをポーリングし、`ready` になるまでマイク系ボタンを無効化する
+  （モデルのロードとウォームアップに数秒〜十数秒かかるため）
+- `stt.enabled: false` の場合は `{"enabled": false, "ready": false}` を返し、
+  フロントはマイクボタンを「🎤 音声入力（無効）」にして押せなくする
 
 ### GET /api/mission  （デイミッション取得API）
 - 現キャラ・現在の Day に紐づく `missions.content` を返す（未設定なら空文字）
@@ -505,9 +575,27 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 
 ## プレイヤー入力
 - **テキスト手入力**：エンター送信 → `/api/messages/player` に POST
-- **音声入力ボタン**：押すと Web Speech API で録音開始、認識結果を `/api/messages/player` に POST
+- **音声入力ボタン**：押すと MediaRecorder で録音開始 → 発話の終わりを検出して
+  `POST /api/stt`（ローカル faster-whisper）で文字起こし → 結果を `/api/messages/player` に POST
+  - 録音中にもう一度押すと、無音を待たずにその場で録音を確定する
+  - モデルのロードが終わるまで（`/api/stt/status` の `ready` が真になるまで）ボタンは無効
 - **音声入力AUTOボタン**：トグル ON 時、上記メッセージ受信ループで再生終了タイミングごとに自動でマイク ON
   - エコー対策はヘッドセット使用前提で運用（必要に応じてガード時間を入れる）
+
+### 発話区間の判定（VAD）
+録音をどこで打ち切るかはブラウザ側で判定する。音量（RMS）が暗騒音の
+`stt.vadNoiseMultiplier` 倍（下限 `stt.vadMinRms`）を超えたら発話中とみなし、
+`stt.silenceEndMs` だけ無音が続いたら録音を終了する。暗騒音は発話していない間だけ
+ゆっくり追従させ、環境ごとのマイク感度差を吸収する。
+
+この判定は **AudioWorklet（音声スレッド）で動かす**。`setInterval` で音量を見る作りにすると、
+ゲームを前面にしてブラウザがバックグラウンドへ回った瞬間に Chrome のタイマー間引き
+（1秒に1回）が効いて、無音検出が数十倍遅くなり録音が終わらなくなる。
+音声スレッドは間引かれず、経過時間もサンプル数から正確に求められる。
+判定結果は `postMessage` でメインスレッドへ1回だけ返す
+（メインスレッド側には、通知が来なかった場合の保険のタイマーも置いてある）。
+
+マイクは一度掴んだら開いたままにする（毎回開き直すと録音開始が遅れるため）。
 
 # 配布・運用
 
@@ -515,9 +603,11 @@ python backend\main.py --longterm-batch --char_id <ID> --day <整数>
 - `hinalocal/` フォルダ全体を ZIP にまとめて転送
 - API キーは無い。環境ごとの設定（接続先URL・スタイルID等）は `config.yaml` / `config.js` で持つ
   （自分専用のため簡略化）
+- STT モデル（約1.6GB）は ZIP に含めず、稼働PC側で `download_stt_model.py` を実行して取得する
+  （`setup.ps1` から自動で呼ばれる。**この取得時だけインターネット接続が必要**）
 - 稼働PC側で実施：
   1. ZIP展開
-  2. `setup.ps1` を実行（venv 作成 + `pip install -r requirements.txt`）
+  2. `setup.ps1` を実行（venv 作成 + `pip install -r requirements.txt` + STTモデルのダウンロード）
   3. `config.yaml` の `llm.base_url` / `tts.base_url` を、Ollama と AivisSpeech Engine の接続先に設定
   4. `config.yaml` の `capture.window_title` を、プレイするゲームウィンドウのタイトル部分一致文字列に設定
   5. `backend/characters/<char_id>/setting.yaml` の `style_id` を設定（`GET /api/tts/speakers` で確認）
@@ -548,6 +638,7 @@ ZIPでまとめて転送できるよう、必要なファイルを `hinalocal/` 
 | ゲーム切替方式 | プロンプトファイルを差し替え（手動。`config.yaml` で active を指定） |
 | LLM | ローカルの Ollama（既定 `gemma4:26b`、vision 対応必須）。`llm.base_url` で LAN 上の推論PCを指定 |
 | TTS | ローカルの AivisSpeech Engine（VOICEVOX互換API、既定ポート 10101）。`POST /api/tts` でバックエンド経由でプロキシ |
+| STT | ローカルの faster-whisper（既定 `large-v3-turbo` / `int8_float16`）。**本アプリと同じマシンの GPU** でバックエンドのプロセス内実行。モデルは事前ダウンロードして `local_files_only` で読むため実行時はオフライン。フロントは MediaRecorder で録音し `POST /api/stt` へ送る（Web Speech API は外部送信のため廃止） |
 | Pythonバージョン | 3.13 |
 | キャプチャ方式 | Python ネイティブ（`mss` + `pygetwindow`、ウィンドウタイトル指定）。加工後JPGのみ保存 |
 | APIキー | 不要（外部APIを使わない） |

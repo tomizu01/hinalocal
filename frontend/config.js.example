@@ -10,6 +10,22 @@ window.HINALOCAL_CONFIG = {
     // ハルシネーション対策：再生開始から固定 ms で強制停止
     audioMaxMs: 25000,
   },
+  // 音声入力（ローカルSTT = バックエンドの /api/stt → faster-whisper）
+  // 録音の切り上げはブラウザ側の簡易VAD（音量ベース）で判定する
+  stt: {
+    // 録音開始後、これだけ無音が続いたら「喋らなかった」として取り消す（ms）
+    speechStartTimeoutMs: 6000,
+    // 発話が始まったあと、これだけ無音が続いたら録音を終了する（ms）
+    silenceEndMs: 900,
+    // 1回の録音の上限（ms）
+    maxRecordMs: 20000,
+    // これより短い発話は物音の誤検知とみなして捨てる（ms）
+    minSpeechMs: 300,
+    // 暗騒音の何倍を超えたら「喋っている」とみなすか
+    vadNoiseMultiplier: 3.0,
+    // 暗騒音がとても小さい環境向けの下限しきい値（RMS 0.0-1.0）
+    vadMinRms: 0.012,
+  },
   // タイプライター表示速度（文字/秒）
   typewriterCharsPerSecond: 7,
   // メッセージポーリング間隔（ミリ秒）

@@ -43,6 +43,20 @@ if (-Not (Test-Path "captures\processing")) {
     New-Item -ItemType Directory -Path "captures\processing" | Out-Null
 }
 
+# STT（faster-whisper）モデルの事前ダウンロード。
+# 実行時は外部ネットワークへ接続しない方針のため、ここでローカルへ取得しておく。
+# すでにダウンロード済みならスキップする。
+$sttModelDir = "backend\models\large-v3-turbo"
+if (-Not (Test-Path "$sttModelDir\model.bin")) {
+    Write-Host "[setup] STT モデル (large-v3-turbo, 約1.6GB) をダウンロードします..."
+    python backend\download_stt_model.py
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[setup] STT モデルのダウンロードに失敗しました。音声入力は使えません。" -ForegroundColor Yellow
+    }
+} else {
+    Write-Host "[setup] STT モデルは取得済みです。"
+}
+
 Write-Host ""
 Write-Host "[setup] 完了しました。" -ForegroundColor Green
 Write-Host "起動するには:"
