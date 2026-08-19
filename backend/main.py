@@ -20,10 +20,12 @@ import httpx
 import mss
 import pygetwindow as gw
 import yaml
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 from pydantic import BaseModel
+
+from stt import AudioDecodeError, build_stt_engine
 
 logging.basicConfig(
     level=logging.INFO,
@@ -1843,17 +1845,24 @@ async def lifespan(app: FastAPI):
     )
     app.state.tts_client = build_tts_client(cfg["tts"])
     logger.info("ローカルTTS初期化: base_url=%s", cfg["tts"]["base_url"])
+    # ローカルSTT（faster-whisper）。このマシンの GPU 上で動かす。
+    # モデルのロードとウォームアップは数秒〜十数秒かかるので、
+    # サーバ起動を待たせないようバックグラウンドタスクで進める。
+    app.state.stt_engine = build_stt_engine(cfg.get("stt"))
     Path(cfg["capture"]["processing_dir"]).mkdir(parents=True, exist_ok=True)
 
     main_task = asyncio.create_task(main_loop(app))
     mt_task = asyncio.create_task(mid_term_memory_loop(app))
     emo_task = asyncio.create_task(emotion_loop(app))
+    tasks = [main_task, mt_task, emo_task]
+    if app.state.stt_engine is not None:
+        tasks.append(asyncio.create_task(app.state.stt_engine.prepare()))
     try:
         yield
     finally:
-        for t in (main_task, mt_task, emo_task):
+        for t in tasks:
             t.cancel()
-        for t in (main_task, mt_task, emo_task):
+        for t in tasks:
             try:
                 await t
             except asyncio.CancelledError:
@@ -1941,6 +1950,52 @@ async def get_tts_speakers():
     except httpx.HTTPError as e:
         logger.exception("TTSサーバに接続できません (%s)", client.base_url)
         raise HTTPException(status_code=502, detail="tts unreachable") from e
+
+
+@app.get("/api/stt/status")
+async def get_stt_status():
+    """ローカルSTTの状態。フロントは ready になるまでマイクボタンを無効化する。"""
+    engine = getattr(app.state, "stt_engine", None)
+    if engine is None:
+        return {"enabled": False, "ready": False}
+    return {
+        "enabled": True,
+        "ready": engine.ready,
+        "model": engine.model_name,
+        "device": engine.device,
+        "compute_type": engine.compute_type,
+    }
+
+
+@app.post("/api/stt")
+async def post_stt(request: Request):
+    """音声認識API。録音した音声（webm/opus, wav 等）を受け取り、テキストを返す。
+
+    ブラウザの Web Speech API は音声を外部サーバへ送るためオフラインで使えない。
+    フロントは MediaRecorder で録音した Blob をこのエンドポイントへ POST し、
+    このマシン上の faster-whisper（GPU）で文字起こしする。
+    会話履歴への保存は行わない（フロントが従来どおり /api/messages/player を呼ぶ）。
+    """
+    engine = getattr(app.state, "stt_engine", None)
+    if engine is None:
+        raise HTTPException(status_code=503, detail="STT is disabled")
+    audio = await request.body()
+    if not audio:
+        raise HTTPException(status_code=400, detail="audio body is empty")
+    max_bytes = int(app.state.config.get("stt", {}).get("max_upload_bytes", 10_000_000))
+    if len(audio) > max_bytes:
+        raise HTTPException(
+            status_code=413, detail=f"audio too large ({len(audio)} > {max_bytes})"
+        )
+    try:
+        text = await engine.transcribe(audio)
+    except AudioDecodeError as e:
+        logger.warning("音声としてデコードできませんでした: %s", e)
+        raise HTTPException(status_code=400, detail=f"cannot decode audio: {e}") from e
+    except Exception as e:
+        logger.exception("音声認識に失敗")
+        raise HTTPException(status_code=503, detail=f"stt failed: {e}") from e
+    return {"text": text}
 
 
 @app.get("/api/mission")

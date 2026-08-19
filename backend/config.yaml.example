@@ -47,6 +47,49 @@ tts:
     volumeScale: 1.0
     tempoDynamicsScale: 1.0
 
+# ローカルSTT設定（faster-whisper）
+# 音声認識は **このマシン（Python を動かすマシン）の GPU** 上で動かす。
+# Ollama / AivisSpeech と違い、LAN 上の別マシンには置けない（HTTP 越しではなく
+# バックエンドのプロセス内で直接モデルを動かすため）。
+# モデルはセットアップ時に `python backend\download_stt_model.py` でローカルへ取得し、
+# 実行時は model_dir だけを読む＝外部ネットワークへ一切接続しない。
+stt:
+  # false にすると音声入力を無効化する（テキスト入力のみになる）
+  enabled: true
+  # モデル名。`python backend\download_stt_model.py --list` で一覧を確認できる。
+  #   large-v3-turbo … 既定。精度と速度のバランスが良い（VRAM 約1.4GB / int8_float16）
+  #   medium         … もう少し軽くしたいとき（VRAM 約1.0GB）
+  #   small          … VRAM に余裕が無いとき（VRAM 約0.6GB、日本語の精度は落ちる）
+  model: "large-v3-turbo"
+  # 事前ダウンロードしたモデルの置き場所。ここが設定されている間は
+  # local_files_only=True で読むためインターネット接続が不要。
+  # 空にすると Hugging Face から取得を試みる（＝初回のみ要インターネット）。
+  model_dir: "C:/hinalocal/backend/models/large-v3-turbo"
+  # cuda（GPU）/ cpu。cuda で失敗したときの挙動は fallback_to_cpu で決める
+  device: "cuda"
+  # GPU が複数あるときの番号
+  device_index: 0
+  # 量子化方式。int8_float16 は float16 の半分程度の VRAM で精度低下がほぼ無い
+  compute_type: "int8_float16"
+  # GPU ロードに失敗したとき CPU で動かすか（CPU だと1発話に数秒〜十数秒かかる）
+  fallback_to_cpu: true
+  # 認識する言語。"ja" 固定にすると言語判定を省けて速くなり、誤判定も無くなる
+  language: "ja"
+  # ビームサーチの幅。大きいほど精度が上がるが遅くなる
+  beam_size: 5
+  # 無音区間を除去してから認識する（幻聴の抑制と処理時間の削減）
+  vad_filter: true
+  # 認識のヒント。固有名詞（キャラ名・ゲーム用語）を並べると精度が上がる
+  initial_prompt: "ひな、りんか、まひろ、こはる。ゲーム実況の雑談。"
+  # これを超えて「無音らしい」と判定されたセグメントは捨てる
+  no_speech_threshold: 0.6
+  # 平均対数尤度がこれを下回る認識結果は信頼しない
+  log_prob_threshold: -1.0
+  # 受け付ける音声データの最大バイト数
+  max_upload_bytes: 10000000
+  # 既定の幻聴フィルタ（「ご視聴ありがとうございました」等）に追加したい文字列
+  hallucination_blocklist: []
+
 # キャプチャ設定
 capture:
   # 対象ゲームウィンドウのタイトル（部分一致）。

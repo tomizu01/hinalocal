@@ -6,3 +6,11 @@ Pillow==11.1.0
 aiofiles==24.1.0
 mss==9.0.2
 pygetwindow==0.0.9
+
+# ローカルSTT（faster-whisper）。音声認識はこのマシンの GPU で動かす。
+# 音声のデコードは faster-whisper が依存する PyAV が行うので ffmpeg の別途導入は不要。
+faster-whisper==1.2.1
+# ctranslate2 の GPU 実行に必要な CUDA ライブラリ（ctranslate2 は依存として持たないので明示する）。
+# cuBLAS は 500MB 超あるためインストールに時間がかかる。
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.24.0.43
